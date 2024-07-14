@@ -1,26 +1,25 @@
-import time
+import datetime as dt
+import os
 import uuid
 import random
 import numpy as np
-from collections import defaultdict
-from kva import kva, set_storage
+from kva import kva, set_storage, File
 from collections import Counter
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import pandas as pd
 
 set_storage("./.kva")
 
 import copy
-
 
 def get_random_name():
     return random.choice([
         "Alice", "Bob", "Charlie", "David", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy", "Kevin", "Larry", "Mallory", "Nancy", "Oscar", "Peggy", "Quentin", "Randy", "Steve", "Trent", "Ursula", "Victor", "Walter", "Xavier", "Yvonne", "Zelda"
     ])
 
-
 def get_random_id():
     return uuid.uuid4().hex[:8]
-
 
 class RewardLogger():
     """List that logs every change to kva"""
@@ -33,9 +32,8 @@ class RewardLogger():
         self.data += [value]
         kva.log(add=value, total=sum(self.data), **self.logging_context)
 
-
 class Agent():
-    def __init__(self, resources=4):
+    def __init__(self, resources=4, location=None, speed=0.01):
         self.history = []
         self.id = get_random_id()
         self.name = get_random_name()
@@ -43,6 +41,8 @@ class Agent():
         self.rewards = RewardLogger(
             {"agent_id": self.id, 'name': self.name, 'class': self.__class__.__name__},
             resources)
+        self.location = location or (random.random(), random.random())
+        self.speed = speed
     
     @property
     def total_reward(self):
@@ -66,39 +66,29 @@ class Agent():
         pass
 
     def child(self, resources):
-        """Return a new agent with the same properties as this agent
-        
-        The default action is to simply copy the agent, but one could also implement a mutation here
-        """
+        """Return a new agent with the same properties as this agent"""
         child = copy.deepcopy(self)
         child.id = get_random_id()
-        kva.log(event="Reproduction", parent_id=self.id, child_id=self.id)
+        kva.log(event="Reproduction", parent_id=self.id, child_id=child.id)
         child.rewards = RewardLogger({"agent_id": child.id}, resources)
+        # Spawn child near parent with some random noise
+        child.location = (
+            self.location[0] + random.gauss(0, self.speed) % 1,
+            self.location[1] + random.gauss(0, self.speed) % 1
+        )
+        child.speed *= random.gauss(1, 0.5)
         return child
-        
 
-        
-
-class AIAgent(Agent):
-    def __init__(self, system_prompt):
-        self.system_prompt = system_prompt
-        super().__init__()
-
-
-class OAIgent(AIAgent):
-    async def get_next_action(self):
-        pass
-
-
-class ClaudeAgent(AIAgent):
-    async def get_next_action(self):
-        pass
-
+    def move(self):
+        """Move the agent randomly"""
+        self.location = (
+            max(0, min(1, self.location[0] + random.gauss(0, self.speed))),
+            max(0, min(1, self.location[1] + random.gauss(0, self.speed)))
+        )
 
 class RandomAgent(Agent):
     async def get_next_action(self, observation, game):
         return random.choice(["Cooperate", "Defect"])
-    
 
 class DefectBot(Agent):
     async def get_next_action(self, observation, game):
@@ -107,21 +97,18 @@ class DefectBot(Agent):
 class CooperateBot(Agent):
     async def get_next_action(self, observation, game):
         return "Cooperate"
-    
 
 class Game():
+    def __init__(self, capacity, location=None):
+        self.capacity = capacity
+        self.location = location or (random.random(), random.random())
+
     async def play(self, agents):
         pass
 
-
-class PrisonersDilemma():
-    """
-    __| C   | D     |
-    C | 1/1 | -1/2  |
-    D | 2/-1| 0/0   |
-    """
-    def __init__(self, capacity=2, rounds=4, noise=0.1):
-        self.capacity = capacity
+class PrisonersDilemma(Game):
+    def __init__(self, capacity=2, rounds=4, noise=0.1, location=None):
+        super().__init__(capacity, location)
         self.rounds = rounds
         self.noise = noise
         self.action_description = {
@@ -138,7 +125,6 @@ class PrisonersDilemma():
                 'required': ['action']
             }
         }
-    
 
     def apply_noise(self, actions):
         invert = {"Cooperate": "Defect", "Defect": "Cooperate"}
@@ -147,21 +133,18 @@ class PrisonersDilemma():
             for action in actions
         ]
     
-    
     def get_reward(self, actions):
         cooperate = np.array([1 if i == "Cooperate" else 0 for i in actions])
         total = np.mean(cooperate)
         shares = ((len(actions))/(len(actions) + 1) - cooperate)
         rewards = total * shares / shares.sum()
         return rewards * (len(actions))
-
     
     async def play(self, agents):
         with kva.context(game=self.action_description['name'], game_id=get_random_id(), players=[agent.id for agent in agents]):
             for agent in agents:
                 await agent.notify("You are playing a round of repeated prisoners dilemma.")
             
-
             for round in range(self.rounds):
                 with kva.context(round=round):
                     actions = []
@@ -177,18 +160,20 @@ class PrisonersDilemma():
                         await agent.notify(observation)
                         agent.rewards.append(reward)
 
-
 class World:
     def __init__(self, agents, games, resources_to_evolve=4.0):
         self.agents = agents
         self.games = games
         self.resources_to_evolve = resources_to_evolve
+        self.world_id = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+        os.makedirs(f'worlds/{self.world_id}', exist_ok=True)
     
     def evolve(self):
         """When an agent has this many resources, they reproduce (copy themselves) and they lose resources"""
         next_generation = []
         for agent in self.agents:
-            agent.rewards.append(-1) # Eating cost
+            agent.rewards.append(-1)  # Eating cost
+            agent.move()  # Move the agent
             if agent.total_reward < 0:
                 continue
             while agent.total_reward > self.resources_to_evolve:
@@ -197,58 +182,89 @@ class World:
             next_generation.append(agent)
         return next_generation
     
-    # def evolve(self):
-    #     # Shuffle agents to avoid selection bias
-    #     random.shuffle(self.agents)
-    #     agents = sorted(self.agents, key=lambda x: x.total_reward, reverse=True)
-    #     best_agents = agents[:len(agents) // 2]
-    #     next_generation = []
-    #     for agent in best_agents:
-    #         agent.rewards.append(-self.resources_to_evolve)
-    #         next_generation += [agent.child(self.resources_to_evolve), agent]
-    #     return next_generation
-    
-    def select_for_game(self, agents, capacity, backup):
-        """Takes a list og agents that need to play in this round and returns a list of agents that will play and a list of agents that still need to play
-        
-        One could implement a location based selection here, but for now we just randomly select agents
-        """
-        if len(agents) < capacity:
-            return agents + random.sample(backup, k=capacity - len(agents)), []
-        
-        ids = random.sample(range(len(agents)), capacity)
-        return [agents[i] for i in ids], [agent for i, agent in enumerate(agents) if i not in ids]
+    def select_for_game(self, agents, game):
+        """Select agents for a game based on proximity"""
+        sorted_agents = sorted(agents, key=lambda a: self.distance(a.location, game.location))
+        selected = sorted_agents[:game.capacity]
+        return selected
+
+    @staticmethod
+    def distance(loc1, loc2):
+        x = (loc1[0] - loc2[0])
+        y = (loc1[1] - loc2[1])
+        x = min(x, 1 - x)
+        y = min(y, 1 - y)
+        return ((loc1[0] - loc2[0])**2 + (loc1[1] - loc2[1])**2)**0.5
 
     @property
     def name(self):
-        # TODO return name based on agent population and game distribution
-        return "World"
+        return "Location-based World"
 
     async def run(self, n_rounds):
-        kva.init()
-        with kva.context(world=self.name, run_id=get_random_id()):
-            for i in tqdm(range(n_rounds)):
-                agents_count = Counter([type(agent).__name__ for agent in self.agents])
-                logged = kva.log(step=i, population=agents_count)
-                print(logged)
-                need_to_play = self.agents
-                while need_to_play:
-                    game = copy.deepcopy(random.choice(self.games))
-                    players, need_to_play = self.select_for_game(need_to_play, game.capacity, backup=[agent for agent in self.agents if agent not in need_to_play])
-                    await game.play(players)
-                self.agents = self.evolve()
-      
+        kva.init(run_id=self.world_id)
+        for i in tqdm(range(n_rounds)):
+            if len(self.agents) == 0:
+                return
+            agents_count = Counter([type(agent).__name__ for agent in self.agents])
+            logged = kva.log(step=i, population=agents_count)
+            print(logged)
+            
+            random.shuffle(self.games)
+            for game in self.games:
+                selected_agents = self.select_for_game(self.agents, game)
+                await game.play(selected_agents)
+            
+            self.agents = self.evolve()
+            if i % 1 == 0:  # Visualize every 10 rounds
+                self.visualize(i)
+
+    def visualize(self, round_number):
+        plt.figure(figsize=(10, 10))
+        for agent in self.agents:
+            color = 'r' if isinstance(agent, DefectBot) else 'g' if isinstance(agent, CooperateBot) else 'b'
+            size = min(1000, agent.total_reward * 30)  # Adjust size based on total_reward
+            plt.scatter(agent.location[0], agent.location[1], c=color, s=size, alpha=0.5)
+        
+        for game in self.games:
+            plt.scatter(game.location[0], game.location[1], c='k', marker='s', s=100)
+        
+        plt.title(f'World State at Round {round_number}')
+        plt.xlim(0, 1)
+        plt.ylim(0, 1)
+        plt.savefig(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png')
+        plt.close()
+        kva.log(world_state=File(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png'))
+    
+    def population_plot(self):
+        df = kva.get(run_id=self.world_id).latest("population", index=["step"])
+        # Make a larger figure with higher resolution
+        fig = plt.figure(figsize=(10, 6), dpi=100)
+
+        df_unpacked = pd.json_normalize(df['population'])
+        df_result = pd.concat([df.drop('population', axis=1), df_unpacked], axis=1)[df['population'].iloc[0].keys()]
+
+        df_result.plot(kind='area', stacked=True, ax=plt.gca())
+        plt.title('Population')
+        plt.xlabel('Step')
+        plt.tight_layout()
+        plt.savefig(f'worlds/{self.world_id}/population.png')
+        kva.log(population_plot=File(f'worlds/{self.world_id}/population.png'))
+    
+    def ffmpeg(self):
+        # ffmpeg -framerate 2 -pattern_type glob -i 'world_state_round_*.png' -c:v libx264 -pix_fmt yuv420p output.mp4
+        os.system(f"ffmpeg -framerate 2 -pattern_type glob -i 'worlds/{self.world_id}/world_state_round_*.png' -c:v libx264 -pix_fmt yuv420p worlds/{self.world_id}/output.mp4")
+        kva.log(animation=File(f'worlds/{self.world_id}/output.mp4'))
 
 async def main():
+    agents = [RandomAgent() for i in range(10)] + [CooperateBot() for i in range(10)] + [DefectBot() for i in range(10)]
     world = World(
-        agents=[RandomAgent() for i in range(10)] + [CooperateBot() for i in range(10)] + [DefectBot() for i in range(2)],
-        games=[PrisonersDilemma(2)]
+        agents=agents,
+        games=[PrisonersDilemma(rounds=4, capacity=2) for _ in range(len(agents)//2)]
     )
 
     await world.run(50)
-    df = kva.get(step=49).latest('players', index='game')
-    print(df)
-
+    world.population_plot()
+    world.ffmpeg()
 
 if __name__ == "__main__":
     import asyncio
