@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await asyncio.sleep(1)
                 continue
 
-            await world.run(1)  # Run one step of the simulation
+            await world.run(1, visualize_every=None)  # Run one step of the simulation
             state = await get_world_state()
             await websocket.send_text(state.json())
             await asyncio.sleep(0.1)  # Adjust this value to control simulation speed

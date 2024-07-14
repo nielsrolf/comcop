@@ -3,7 +3,8 @@ import os
 import uuid
 import random
 import numpy as np
-from kva import kva, set_storage, File
+from kva import set_storage, File
+from kva import deactivated as kva
 from collections import Counter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -33,7 +34,7 @@ class RewardLogger():
         kva.log(add=value, total=sum(self.data), **self.logging_context)
 
 class Agent():
-    def __init__(self, resources=4, location=None, speed=0.01):
+    def __init__(self, resources=4, location=None, speed=0.1):
         self.history = []
         self.id = get_random_id()
         self.name = get_random_name()
@@ -49,12 +50,12 @@ class Agent():
         return sum(self.rewards.data)
 
     async def react(self, observation, options, game):
-        logged = kva.log(observation=observation, agent_id=self.id)
+        # logged = kva.log(observation=observation, agent_id=self.id)
         observation = "\n".join(self.inbox) + "\n" + observation
         self.inbox = []
         self.history.append(observation)
         action = await self.get_next_action(observation, game)
-        kva.log(action=action, agent_id=self.id)
+        # kva.log(action=action, agent_id=self.id)
         self.history.append(action)
         return action
     
@@ -73,8 +74,8 @@ class Agent():
         child.rewards = RewardLogger({"agent_id": child.id}, resources)
         # Spawn child near parent with some random noise
         child.location = (
-            self.location[0] + random.gauss(0, self.speed) % 1,
-            self.location[1] + random.gauss(0, self.speed) % 1
+            (self.location[0] + random.gauss(0, self.speed)) % 1,
+            (self.location[1] + random.gauss(0, self.speed)) % 1
         )
         child.speed *= random.gauss(1, 0.5)
         return child
@@ -180,6 +181,7 @@ class World:
         self.world_id = dt.datetime.now().strftime("%Y%m%d%H%M%S")
         os.makedirs(f'worlds/{self.world_id}', exist_ok=True)
         self.stopped_at_step = 0
+        self.population_history = []
     
     def evolve(self):
         """When an agent has this many resources, they reproduce (copy themselves) and they lose resources"""
@@ -213,23 +215,24 @@ class World:
     def name(self):
         return "Location-based World"
 
-    async def run(self, n_rounds):
-        kva.init(run_id=self.world_id)
+    async def run(self, n_rounds, visualize_every=1):
+        # kva.init(run_id=self.world_id)
         for i in tqdm(range(n_rounds)):
             if len(self.agents) == 0:
                 self.stopped_at_step += i
                 return
             agents_count = Counter([type(agent).__name__ for agent in self.agents])
-            logged = kva.log(step=self.stopped_at_step + i, population=agents_count)
-            print(logged)
-            
+            # logged = kva.log(step=self.stopped_at_step + i, population=agents_count)
+            self.population_history.append(agents_count)
+            print(f"Step {self.stopped_at_step + i}: {agents_count}")
+
             random.shuffle(self.games)
             for game in self.games:
                 selected_agents = self.select_for_game(self.agents, game)
                 await game.play(selected_agents)
             
             self.agents = self.evolve()
-            if i % 1 == 0:  # Visualize every 10 rounds
+            if visualize_every is not None and i % visualize_every == 0:  # Visualize every 10 rounds
                 self.visualize(i)
         self.stopped_at_step += n_rounds
 
@@ -248,22 +251,23 @@ class World:
         plt.ylim(0, 1)
         plt.savefig(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png')
         plt.close()
-        kva.log(world_state=File(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png'))
+        # kva.log(world_state=File(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png'))
     
     def population_plot(self):
-        df = kva.get(run_id=self.world_id).latest("population", index=["step"])
         # Make a larger figure with higher resolution
+
+        # df = kva.get(run_id=self.world_id).latest("population", index=["step"])
+        # df_unpacked = pd.json_normalize(df['population'])
+        # df_result = pd.concat([df.drop('population', axis=1), df_unpacked], axis=1)[df['population'].iloc[0].keys()]
+
+        df_result = pd.DataFrame(self.population_history)
         fig = plt.figure(figsize=(10, 6), dpi=100)
-
-        df_unpacked = pd.json_normalize(df['population'])
-        df_result = pd.concat([df.drop('population', axis=1), df_unpacked], axis=1)[df['population'].iloc[0].keys()]
-
         df_result.plot(kind='area', stacked=True, ax=plt.gca())
         plt.title('Population')
         plt.xlabel('Step')
         plt.tight_layout()
         plt.savefig(f'worlds/{self.world_id}/population.png')
-        kva.log(population_plot=File(f'worlds/{self.world_id}/population.png'))
+        # kva.log(population_plot=File(f'worlds/{self.world_id}/population.png'))
     
     def ffmpeg(self):
         # ffmpeg -framerate 2 -pattern_type glob -i 'world_state_round_*.png' -c:v libx264 -pix_fmt yuv420p output.mp4

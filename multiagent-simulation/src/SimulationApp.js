@@ -110,8 +110,8 @@ const SimulationApp = () => {
         }];
       }
 
-      const newStates = [...prevStates, newState];
-      setCurrentStep(newStates.length - 1);
+      const newStates = [newState];
+      setCurrentStep(0);
       return newStates;
     });
   };
