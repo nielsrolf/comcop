@@ -89,14 +89,26 @@ class Agent():
 class RandomAgent(Agent):
     async def get_next_action(self, observation, game):
         return random.choice(["Cooperate", "Defect"])
+    
+    @property
+    def color(self):
+        return 'blue'
 
 class DefectBot(Agent):
     async def get_next_action(self, observation, game):
         return "Defect"
+    
+    @property
+    def color(self):
+        return 'red'
 
 class CooperateBot(Agent):
     async def get_next_action(self, observation, game):
         return "Cooperate"
+    
+    @property
+    def color(self):
+        return 'green'
 
 class Game():
     def __init__(self, capacity, location=None):
@@ -167,6 +179,7 @@ class World:
         self.resources_to_evolve = resources_to_evolve
         self.world_id = dt.datetime.now().strftime("%Y%m%d%H%M%S")
         os.makedirs(f'worlds/{self.world_id}', exist_ok=True)
+        self.stopped_at_step = 0
     
     def evolve(self):
         """When an agent has this many resources, they reproduce (copy themselves) and they lose resources"""
@@ -204,9 +217,10 @@ class World:
         kva.init(run_id=self.world_id)
         for i in tqdm(range(n_rounds)):
             if len(self.agents) == 0:
+                self.stopped_at_step += i
                 return
             agents_count = Counter([type(agent).__name__ for agent in self.agents])
-            logged = kva.log(step=i, population=agents_count)
+            logged = kva.log(step=self.stopped_at_step + i, population=agents_count)
             print(logged)
             
             random.shuffle(self.games)
@@ -217,6 +231,7 @@ class World:
             self.agents = self.evolve()
             if i % 1 == 0:  # Visualize every 10 rounds
                 self.visualize(i)
+        self.stopped_at_step += n_rounds
 
     def visualize(self, round_number):
         plt.figure(figsize=(10, 10))

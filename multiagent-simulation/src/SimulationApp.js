@@ -8,6 +8,7 @@ const SimulationApp = () => {
   const [worldStates, setWorldStates] = useState([]);
   const [selectedEntity, setSelectedEntity] = useState('RandomAgent');
   const [currentStep, setCurrentStep] = useState(0);
+  const [populationPlot, setPopulationPlot] = useState(null);
   const canvasRef = useRef(null);
   const wsRef = useRef(null);
 
@@ -64,8 +65,14 @@ const SimulationApp = () => {
     // Draw agents
     state.agents.forEach(agent => {
       ctx.beginPath();
-      ctx.arc(agent.location[0] * canvas.width, agent.location[1] * canvas.height, 5, 0, 2 * Math.PI);
-      ctx.fillStyle = agent.type === 'DefectBot' ? 'red' : agent.type === 'CooperateBot' ? 'green' : 'blue';
+      ctx.arc(
+        agent.location[0] * canvas.width, 
+        agent.location[1] * canvas.height, 
+        Math.max(2, Math.min(10, agent.resources / 10)), // Size based on resources, min 2, max 10
+        0, 
+        2 * Math.PI
+      );
+      ctx.fillStyle = agent.color;
       ctx.fill();
     });
 
@@ -94,7 +101,13 @@ const SimulationApp = () => {
       if (selectedEntity === 'PrisonersDilemma') {
         newState.games = [...newState.games, { type: 'PrisonersDilemma', location: [x, y] }];
       } else {
-        newState.agents = [...newState.agents, { type: selectedEntity, location: [x, y] }];
+        newState.agents = [...newState.agents, { 
+          type: selectedEntity, 
+          location: [x, y],
+          resources: 10, // Initial resources
+          color: selectedEntity === 'RandomAgent' ? 'blue' : 
+                 selectedEntity === 'CooperateBot' ? 'green' : 'red'
+        }];
       }
 
       const newStates = [...prevStates, newState];
@@ -107,9 +120,17 @@ const SimulationApp = () => {
     setCurrentStep(value[0]);
   };
 
+  const fetchPopulationPlot = async () => {
+    const response = await fetch('http://localhost:8000/population_plot');
+    if (response.ok) {
+      const blob = await response.blob();
+      setPopulationPlot(URL.createObjectURL(blob));
+    }
+  };
+
   return (
-    <div className="p-4">
-      <Card>
+    <div className="p-4 flex">
+      <Card className="mr-4">
         <CardHeader>Multiagent Simulation</CardHeader>
         <CardContent>
           <div className="space-y-4">
@@ -149,6 +170,17 @@ const SimulationApp = () => {
               Games: {worldStates[currentStep]?.games.length || 0}
             </div>
           </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>Population Distribution</CardHeader>
+        <CardContent>
+          <Button onClick={fetchPopulationPlot}>
+            {populationPlot ? 'Update Population Plot' : 'Render Population Plot'}
+          </Button>
+          {populationPlot && (
+            <img src={populationPlot} alt="Population Distribution" className="mt-4" />
+          )}
         </CardContent>
       </Card>
     </div>
