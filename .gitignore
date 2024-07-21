@@ -1,0 +1,11 @@
+.kva
+.llm-cache
+*.png
+*.pkl
+*.csv
+dev.*
+*.yaml
+.backup/
+multiagent-simulation/node_modules/
+worlds/
+__pycache__/

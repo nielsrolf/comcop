@@ -9,6 +9,9 @@ const SimulationApp = () => {
   const [selectedEntity, setSelectedEntity] = useState('RandomAgent');
   const [currentStep, setCurrentStep] = useState(0);
   const [populationPlot, setPopulationPlot] = useState(null);
+  const [agentSpeed, setAgentSpeed] = useState(0.1);
+  const [hoveredAgent, setHoveredAgent] = useState(null);
+  const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const canvasRef = useRef(null);
   const wsRef = useRef(null);
 
@@ -47,12 +50,21 @@ const SimulationApp = () => {
       });
     };
     wsRef.current.onclose = () => {
-      console.log('WebSocket closed. Attempting to reconnect...');
-      setTimeout(startSimulation, 1000);
+      console.log('WebSocket closed.');
+      setIsSimulationRunning(false);
     };
     wsRef.current.onerror = (error) => {
       console.error('WebSocket error:', error);
+      setIsSimulationRunning(false);
     };
+    setIsSimulationRunning(true);
+  };
+
+  const stopSimulation = () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    setIsSimulationRunning(false);
   };
 
   const drawWorld = (state) => {
@@ -62,24 +74,42 @@ const SimulationApp = () => {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw agents
+    // Draw games first
+    state.games.forEach(game => {
+      ctx.beginPath();
+      ctx.arc(
+        game.location[0] * canvas.width,
+        game.location[1] * canvas.height,
+        15, // Fixed size for games
+        0,
+        2 * Math.PI
+      );
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+      ctx.fill();
+      ctx.strokeStyle = 'black';
+      ctx.stroke();
+
+      // Draw PD icon
+      ctx.fillStyle = 'black';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('PD', game.location[0] * canvas.width, game.location[1] * canvas.height);
+    });
+
+    // Then draw agents
     state.agents.forEach(agent => {
+      const size = Math.max(5, Math.min(20, agent.resources / 2)); // Size based on resources, min 5, max 20
       ctx.beginPath();
       ctx.arc(
         agent.location[0] * canvas.width, 
         agent.location[1] * canvas.height, 
-        Math.max(2, Math.min(10, agent.resources / 10)), // Size based on resources, min 2, max 10
+        size,
         0, 
         2 * Math.PI
       );
       ctx.fillStyle = agent.color;
       ctx.fill();
-    });
-
-    // Draw games
-    state.games.forEach(game => {
-      ctx.fillStyle = 'black';
-      ctx.fillRect(game.location[0] * canvas.width - 5, game.location[1] * canvas.height - 5, 10, 10);
     });
   };
 
@@ -105,6 +135,7 @@ const SimulationApp = () => {
           type: selectedEntity, 
           location: [x, y],
           resources: 10, // Initial resources
+          speed: agentSpeed,
           color: selectedEntity === 'RandomAgent' ? 'blue' : 
                  selectedEntity === 'CooperateBot' ? 'green' : 'red'
         }];
@@ -114,6 +145,23 @@ const SimulationApp = () => {
       setCurrentStep(0);
       return newStates;
     });
+  };
+
+  const handleCanvasHover = (event) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const x = (event.clientX - rect.left) / canvas.width;
+    const y = (event.clientY - rect.top) / canvas.height;
+
+    const currentState = worldStates[currentStep];
+    if (currentState) {
+      const hoveredAgent = currentState.agents.find(agent => {
+        const dx = agent.location[0] - x;
+        const dy = agent.location[1] - y;
+        return Math.sqrt(dx*dx + dy*dy) < 0.02; // Adjust this value to change hover sensitivity
+      });
+      setHoveredAgent(hoveredAgent);
+    }
   };
 
   const handleSliderChange = (value) => {
@@ -129,12 +177,12 @@ const SimulationApp = () => {
   };
 
   return (
-    <div className="p-4 flex">
-      <Card className="mr-4">
+    <div className="p-4 flex flex-col md:flex-row">
+      <Card className="mr-4 mb-4 md:mb-0">
         <CardHeader>Multiagent Simulation</CardHeader>
         <CardContent>
           <div className="space-y-4">
-            <div className="flex space-x-4">
+            <div className="flex flex-wrap space-x-4 space-y-2">
               <Select value={selectedEntity} onValueChange={setSelectedEntity}>
                 <SelectTrigger className="w-[180px]">
                   <SelectValue placeholder="Select entity to place" />
@@ -146,15 +194,38 @@ const SimulationApp = () => {
                   <SelectItem value="PrisonersDilemma">Prisoner's Dilemma Game</SelectItem>
                 </SelectContent>
               </Select>
-              <Button onClick={initWorld}>Initialize and Run Simulation</Button>
+              <Button onClick={initWorld} disabled={isSimulationRunning}>Initialize and Run Simulation</Button>
+              <Button onClick={stopSimulation} disabled={!isSimulationRunning}>Stop Simulation</Button>
             </div>
-            <canvas 
-              ref={canvasRef} 
-              width={500} 
-              height={500} 
-              className="border border-gray-300" 
-              onClick={handleCanvasClick}
-            />
+            <div className="flex items-center space-x-2">
+              <span>Agent Speed:</span>
+              <Slider
+                value={[agentSpeed]}
+                min={0.01}
+                max={0.5}
+                step={0.01}
+                className="w-[200px]"
+                onValueChange={(value) => setAgentSpeed(value[0])}
+              />
+              <span>{agentSpeed.toFixed(2)}</span>
+            </div>
+            <div className="relative">
+              <canvas 
+                ref={canvasRef} 
+                width={500} 
+                height={500} 
+                className="border border-gray-300" 
+                onClick={handleCanvasClick}
+                onMouseMove={handleCanvasHover}
+                onMouseLeave={() => setHoveredAgent(null)}
+              />
+              {hoveredAgent && (
+                <div className="absolute top-0 left-0 bg-white p-2 border border-gray-300 rounded shadow">
+                  <p>Resources: {hoveredAgent.resources?.toFixed(2) ?? 'N/A'}</p>
+                  <p>Speed: {hoveredAgent.speed?.toFixed(2) ?? 'N/A'}</p>
+                </div>
+              )}
+            </div>
             <div className="flex items-center space-x-4">
               <span>Step: {currentStep}</span>
               <Slider

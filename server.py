@@ -27,6 +27,7 @@ class Agent(BaseModel):
     type: str
     location: Tuple[float, float]
     resources: float
+    speed: float
     color: str
 
 class Game(BaseModel):
@@ -45,15 +46,15 @@ async def init_world(state: WorldState):
     agents = []
     for agent_data in state.agents:
         if agent_data.type == "RandomAgent":
-            agent = RandomAgent()
+            agent = RandomAgent(speed=agent_data.speed)
         elif agent_data.type == "CooperateBot":
-            agent = CooperateBot()
+            agent = CooperateBot(speed=agent_data.speed)
         elif agent_data.type == "DefectBot":
-            agent = DefectBot()
+            agent = DefectBot(speed=agent_data.speed)
         else:
             continue  # Skip unknown agent types
         agent.location = agent_data.location
-        agent.resources = agent_data.resources
+        agent.rewards.append(agent_data.resources - agent.total_reward)  # Set initial resources
         agents.append(agent)
 
     games = [PrisonersDilemma(rounds=4, capacity=2, location=game.location) for game in state.games]
@@ -69,6 +70,7 @@ async def get_world_state():
             type=type(agent).__name__,
             location=agent.location,
             resources=agent.total_reward,
+            speed=agent.speed,
             color=agent.color if hasattr(agent, 'color') else '#000000'
         ) for agent in world.agents],
         games=[Game(
