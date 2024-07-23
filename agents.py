@@ -209,4 +209,24 @@ class MutatingBot(Agent):
         child.speed *= random.gauss(1, 0.1)
         
         return child
-        
+
+
+# # Visualize how colors evolve
+# from utils import binary_to_rgb
+# if __name__ == "__main__":
+#     breakpoint()
+#     import matplotlib.pyplot as plt
+#     import numpy as np
+
+#     agent = MutatingBot()
+#     colors = [agent.color]
+#     for _ in range(1000):
+#         agent = agent.child(4)
+#         colors.append(agent.color)
+#         print(agent.color, binary_to_rgb(agent.color))
+    
+#     # Plot
+#     fig, ax = plt.subplots(figsize=(10, 1))
+#     ax.imshow([np.array([binary_to_rgb(color) for color in colors])])
+#     ax.axis("off")
+#     plt.show()

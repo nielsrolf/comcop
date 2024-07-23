@@ -12,7 +12,8 @@ def get_random_id():
 
 def random_color():
     # Return 3 byte binary string
-    return ' '.join([format(random.randint(0, 255), '08b') for _ in range(3)])
+    original = [" ".join([bit for bit in format(random.randint(0, 255), '08b')]) for _ in range(3)]
+    return ''.join(original)
 
 def binary_to_rgb(binary):
     # Return hex string like #FFFFFF
