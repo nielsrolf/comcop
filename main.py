@@ -95,7 +95,6 @@ class World:
         plt.ylim(0, 1)
         plt.savefig(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png')
         plt.close()
-        # kva.log(world_state=File(f'worlds/{self.world_id}/world_state_round_{round_number:06d}.png'))
     
     def individuals_plot(self):
         # Like population plot, except it's a plot of stacked colored dots - one for each agent
@@ -111,10 +110,6 @@ class World:
     def population_plot(self):
         # Make a larger figure with higher resolution
 
-        # df = kva.get(run_id=self.world_id).latest("population", index=["step"])
-        # df_unpacked = pd.json_normalize(df['population'])
-        # df_result = pd.concat([df.drop('population', axis=1), df_unpacked], axis=1)[df['population'].iloc[0].keys()]
-
         df_result = pd.DataFrame(self.population_history)
         fig = plt.figure(figsize=(10, 6), dpi=100)
         df_result.plot(kind='area', stacked=True, ax=plt.gca())
@@ -122,12 +117,9 @@ class World:
         plt.xlabel('Step')
         plt.tight_layout()
         plt.savefig(f'worlds/{self.world_id}/population.png')
-        # kva.log(population_plot=File(f'worlds/{self.world_id}/population.png'))
     
     def ffmpeg(self):
-        # ffmpeg -framerate 2 -pattern_type glob -i 'world_state_round_*.png' -c:v libx264 -pix_fmt yuv420p output.mp4
         os.system(f"ffmpeg -framerate 2 -pattern_type glob -i 'worlds/{self.world_id}/world_state_round_*.png' -c:v libx264 -pix_fmt yuv420p worlds/{self.world_id}/output.mp4")
-        # kva.log(animation=File(f'worlds/{self.world_id}/output.mp4'))
 
 async def main():
     agents = [MutatingBot() for i in range(10)] + [CooperateBot() for i in range(10)] + [DefectBot() for i in range(2)] 

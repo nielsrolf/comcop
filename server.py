@@ -10,16 +10,17 @@ import io
 import matplotlib.pyplot as plt
 
 # Import your existing simulation classes and functions
-from main import World, RandomAgent, CooperateBot, DefectBot, PrisonersDilemma
+from main import World, RandomAgent, CooperateBot, DefectBot, PrisonersDilemma, MutatingBot
+from utils import binary_to_rgb
 
 app = FastAPI()
 
-# Add CORS middleware
+# Add CORS middleware - must be added before routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -42,6 +43,7 @@ world = None
 
 @app.post("/init_world")
 async def init_world(state: WorldState):
+    print(f"[init_world] Received request with {len(state.agents)} agents and {len(state.games)} games")
     global world
     agents = []
     for agent_data in state.agents:
@@ -51,10 +53,12 @@ async def init_world(state: WorldState):
             agent = CooperateBot(speed=agent_data.speed)
         elif agent_data.type == "DefectBot":
             agent = DefectBot(speed=agent_data.speed)
+        elif agent_data.type == "MutatingBot":
+            agent = MutatingBot(speed=agent_data.speed)
         else:
-            continue  # Skip unknown agent types
+            continue    # Skip unknown agent types
         agent.location = agent_data.location
-        agent.rewards.append(agent_data.resources - agent.total_reward)  # Set initial resources
+        agent.rewards.append(agent_data.resources - agent.total_reward)    # Set initial resources
         agents.append(agent)
 
     games = [PrisonersDilemma(rounds=4, capacity=2, location=game.location) for game in state.games]
@@ -71,7 +75,7 @@ async def get_world_state():
             location=agent.location,
             resources=agent.total_reward,
             speed=agent.speed,
-            color=agent.color if hasattr(agent, 'color') else '#000000'
+            color=binary_to_rgb(agent.color) if hasattr(agent, 'color') else '#000000'
         ) for agent in world.agents],
         games=[Game(
             type=type(game).__name__,

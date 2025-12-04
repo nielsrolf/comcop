@@ -24,15 +24,25 @@ const SimulationApp = () => {
   }, []);
 
   const initWorld = async () => {
-    const response = await fetch('http://localhost:8000/init_world', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(worldStates[worldStates.length - 1] || { agents: [], games: [] }),
-    });
-    if (response.ok) {
-      startSimulation();
+    try {
+      console.log('Sending init_world request...');
+      const response = await fetch('http://localhost:8000/init_world', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(worldStates[worldStates.length - 1] || { agents: [], games: [] }),
+      });
+      console.log('Response received:', response.status);
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Init successful:', data);
+        startSimulation();
+      } else {
+        console.error('Init failed:', response.status, await response.text());
+      }
+    } catch (error) {
+      console.error('Error initializing world:', error);
     }
   };
 
@@ -68,12 +78,12 @@ const SimulationApp = () => {
   };
 
   const drawWorld = (state) => {
-    if (!canvasRef.current || !state) return;
-
+    if (!canvasRef.current ||!state) return;
+  
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
+  
     // Draw games first
     state.games.forEach(game => {
       ctx.beginPath();
@@ -88,15 +98,15 @@ const SimulationApp = () => {
       ctx.fill();
       ctx.strokeStyle = 'black';
       ctx.stroke();
-
+  
       // Draw PD icon
       ctx.fillStyle = 'black';
       ctx.font = '12px Arial';
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.textBaseline ='middle';
       ctx.fillText('PD', game.location[0] * canvas.width, game.location[1] * canvas.height);
     });
-
+  
     // Then draw agents
     state.agents.forEach(agent => {
       const size = Math.max(5, Math.min(20, agent.resources / 2)); // Size based on resources, min 5, max 20
@@ -123,11 +133,11 @@ const SimulationApp = () => {
     const rect = canvas.getBoundingClientRect();
     const x = (event.clientX - rect.left) / canvas.width;
     const y = (event.clientY - rect.top) / canvas.height;
-
+  
     setWorldStates(prevStates => {
       const lastState = prevStates[prevStates.length - 1] || { agents: [], games: [] };
-      const newState = { ...lastState };
-
+      const newState = {...lastState };
+  
       if (selectedEntity === 'PrisonersDilemma') {
         newState.games = [...newState.games, { type: 'PrisonersDilemma', location: [x, y] }];
       } else {
@@ -136,11 +146,13 @@ const SimulationApp = () => {
           location: [x, y],
           resources: 10, // Initial resources
           speed: agentSpeed,
-          color: selectedEntity === 'RandomAgent' ? 'blue' : 
-                 selectedEntity === 'CooperateBot' ? 'green' : 'red'
+          color: selectedEntity === 'RandomAgent'? 'blue' : 
+                 selectedEntity === 'CooperateBot'? 'green' : 
+                 selectedEntity === 'DefectBot'?'red' : 
+                 selectedEntity === 'MutatingBot'? 'purple' : 'black'
         }];
       }
-
+  
       const newStates = [newState];
       setCurrentStep(0);
       return newStates;
@@ -191,6 +203,7 @@ const SimulationApp = () => {
                   <SelectItem value="RandomAgent">Random Agent</SelectItem>
                   <SelectItem value="CooperateBot">Cooperate Bot</SelectItem>
                   <SelectItem value="DefectBot">Defect Bot</SelectItem>
+                  <SelectItem value="MutatingBot">Mutating Bot</SelectItem>
                   <SelectItem value="PrisonersDilemma">Prisoner's Dilemma Game</SelectItem>
                 </SelectContent>
               </Select>

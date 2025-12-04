@@ -9,3 +9,6 @@ dev.*
 multiagent-simulation/node_modules/
 worlds/
 __pycache__/
+
+.DS_Store
+.claude/
