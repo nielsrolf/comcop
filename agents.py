@@ -276,6 +276,54 @@ class TagBot(Agent):
         return child
 
 
+class KinMutatingBot(MutatingBot):
+    """MutatingBot that can *condition its learned rules on the co-player's look*.
+
+    Roadmap item 2. The original MutatingBot learned `trajectory -> action`
+    rules, but the trajectory never contained any information about *who* it
+    was playing, so no kin-conditioned strategy ("cooperate with look-alikes,
+    defect against strangers") could ever be expressed, let alone selected for.
+
+    Now that `game.current_players` exposes each co-player's heritable `.color`
+    tag, this agent injects a *discretized kin-similarity token* into the
+    trajectory before rule matching:
+
+        LOOK <bucket>
+
+    where `bucket` in {0..n_buckets-1} is the average bit-similarity between
+    this agent's tag and its co-players', binned into `n_buckets`. Because the
+    token is an ordinary (non-`#`, non-`//`) line, MutatingBot's existing
+    Rule.matches / Rule.mutate machinery treats it exactly like any other part
+    of the pattern: rules can key off it, and mutation can generalize it to `*`
+    (kin-agnostic) when that turns out to be fitter. Evolution then decides,
+    for free, whether reading the tag is worth conditioning on.
+    """
+
+    def __init__(self, resources=4, location=None, speed=0.1, n_buckets=4):
+        super().__init__(resources, location, speed)
+        self.color = random_color()  # heritable, mutable "look" / tag
+        self.n_buckets = n_buckets
+
+    def _kin_bucket(self, game):
+        co_players = [a for a in getattr(game, "current_players", []) if a is not self]
+        if not co_players:
+            return None
+        avg_similarity = sum(
+            hamming_similarity(self.color, other.color) for other in co_players
+        ) / len(co_players)
+        # Map [0, 1] similarity onto an integer bucket 0..n_buckets-1.
+        bucket = min(self.n_buckets - 1, int(avg_similarity * self.n_buckets))
+        return bucket
+
+    async def get_next_action(self, observation, game):
+        bucket = self._kin_bucket(game)
+        if bucket is not None:
+            # Prepend a matchable kinship token so learned rules can condition
+            # on "how much does my opponent look like me right now".
+            observation = f"LOOK {bucket}\n" + observation
+        return await super().get_next_action(observation, game)
+
+
 # # Visualize how colors evolve
 # from utils import binary_to_rgb
 # if __name__ == "__main__":
