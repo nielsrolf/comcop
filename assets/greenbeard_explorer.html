@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Green-beard Simulation</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; padding: 12px 14px 18px; background: #fafafa; color: #1a1a1a;
+  }
+  h2 { margin: 0 0 4px; font-size: 16px; }
+  p.sub { margin: 0 0 10px; color: #555; font-size: 12.5px; max-width: 900px; }
+  .layout { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .panel { background: #fff; border: 1px solid #e2e2e2; border-radius: 10px; padding: 10px 12px; }
+  .viz { flex: 1 1 320px; min-width: 300px; }
+  .chartpanel { flex: 1 1 320px; min-width: 300px; }
+  .btnrow { display: flex; gap: 8px; margin: 8px 0 4px; flex-wrap: wrap; align-items: center; }
+  button {
+    border: none; border-radius: 6px; padding: 6px 11px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; background: #2563eb; color: white;
+  }
+  button.secondary { background: #6b7280; }
+  button:active { transform: translateY(1px); }
+  canvas#world { background: #101418; border-radius: 8px; display: block; width: 100%; height: auto; cursor: crosshair; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 12.5px; margin-top: 8px; }
+  .stats b { color: #111; }
+  .hint { font-size: 11.5px; color: #777; margin-top: 8px; line-height: 1.4; }
+  .loopbadge { font-size: 11px; color: #2563eb; font-weight: 600; }
+  details { margin-top: 8px; font-size: 12.5px; }
+  summary { cursor: pointer; font-weight: 600; color: #374151; }
+  .control-row { margin: 8px 0; }
+  .control-row label { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+  .control-row input[type=range] { width: 100%; }
+  .inspect { margin-top: 8px; font-size: 12px; background: #f3f4f6; border-radius: 6px; padding: 8px; min-height: 34px; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:50%; vertical-align:middle; margin-right:5px; border:1px solid #0003; }
+</style>
+</head>
+<body>
+
+<h2>Green-beard simulation — tag-based kin recognition, random pairing</h2>
+<p class="sub">
+  Every agent carries a costless, heritable 16-bit <b>tag</b> (shown as its color) and a heritable
+  <b>tolerance</b> $\tau$. It cooperates with a co-player only if their tags match on a fraction $\ge \tau$ of bits.
+  Pairing is <b>uniformly random</b> — there is no spatial structure — so any cooperation that survives
+  comes purely from reading the tag. Runs auto-loop; click any agent to inspect it.
+</p>
+
+<div class="layout">
+  <div class="panel viz">
+    <canvas id="world" width="420" height="420"></canvas>
+    <div class="btnrow">
+      <button id="playPause">⏸ Pause</button>
+      <button id="resetBtn" class="secondary">New run</button>
+      <span id="loopBadge" class="loopbadge"></span>
+    </div>
+    <div class="inspect" id="inspect">Click an agent to inspect its tag, tolerance, and how similar the rest of the population is to it.</div>
+    <details>
+      <summary>Configure</summary>
+      <div class="control-row">
+        <label>Initial population <span id="initialPopulationVal">50</span></label>
+        <input type="range" id="initialPopulation" min="20" max="120" value="50" />
+      </div>
+      <div class="control-row">
+        <label>Tolerance mutation strength <span id="mutationRateVal">0.05</span></label>
+        <input type="range" id="mutationRate" min="0" max="20" value="5" />
+      </div>
+      <div class="control-row">
+        <label>Speed <span id="speedVal">7 steps/s</span></label>
+        <input type="range" id="speed" min="1" max="30" value="7" />
+      </div>
+    </details>
+    <div class="hint">
+      Per round, 2 players: mutual cooperate +1/+1, mutual defect 0/0, one-sided defect gives the
+      defector +2 and the cooperator −1 (matches <code>games.py</code>). Configuring anything stops the auto-loop.
+    </div>
+  </div>
+
+  <div class="panel chartpanel">
+    <canvas id="chart" width="420" height="420"></canvas>
+    <div class="stats" id="stats"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  function gaussian(mean, std) {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return mean + std * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  function randInt(n) { return Math.floor(Math.random() * n); }
+  function wrap01(x) { x = x % 1; return x < 0 ? x + 1 : x; }
+  function tagSimilarity(a, b) {
+    let x = (a ^ b) & 0xFFFF, diff = 0;
+    while (x) { diff += x & 1; x >>= 1; }
+    return 1 - diff / 16;
+  }
+  function hueColor(tag) { return `hsl(${((tag / 65535) * 360).toFixed(0)}, 65%, 50%)`; }
+
+  let agents = [], games = [], step = 0, running = true, timer = null, selected = null;
+  let history = { pop: [], coopRate: [], avgTolerance: [], avgSim: [] };
+  let autoLoop = true;
+
+  function params() {
+    return {
+      initialPopulation: parseInt($('initialPopulation').value, 10),
+      mutationRate: parseInt($('mutationRate').value, 10) / 100,
+      speed: parseInt($('speed').value, 10),
+    };
+  }
+  function makeAgent(p) {
+    return { x: Math.random(), y: Math.random(), speed: 0.02, resources: 4,
+             tag: randInt(65536), tolerance: Math.random() };
+  }
+  function reset() {
+    const p = params();
+    agents = Array.from({ length: p.initialPopulation }, () => makeAgent(p));
+    games = Array.from({ length: Math.max(1, Math.floor(p.initialPopulation / 2)) },
+                       () => ({ x: Math.random(), y: Math.random() }));
+    step = 0; selected = null;
+    history = { pop: [], coopRate: [], avgTolerance: [], avgSim: [] };
+    render(); updateChart(true); updateStats(NaN); updateInspect();
+  }
+  function decide(a, opp) {
+    return tagSimilarity(a.tag, opp.tag) >= a.tolerance ? 'Cooperate' : 'Defect';
+  }
+  function randomPair() {
+    if (agents.length < 2) return null;
+    const i = randInt(agents.length);
+    let j = randInt(agents.length); while (j === i) j = randInt(agents.length);
+    return [agents[i], agents[j]];
+  }
+  const ROUNDS = 3;
+
+  function avgPairwiseSim() {
+    if (agents.length < 2) return NaN;
+    let s = 0, n = 0;
+    const samples = Math.min(agents.length, 40);
+    for (let k = 0; k < samples; k++) {
+      const a = agents[randInt(agents.length)], b = agents[randInt(agents.length)];
+      if (a !== b) { s += tagSimilarity(a.tag, b.tag); n++; }
+    }
+    return n ? s / n : NaN;
+  }
+
+  function stepWorld() {
+    const p = params();
+    for (const a of agents) {
+      a.resources -= 1;
+      a.x = wrap01(a.x + gaussian(0, a.speed));
+      a.y = wrap01(a.y + gaussian(0, a.speed));
+    }
+    agents = agents.filter(a => a.resources >= 0);
+    if (selected && !agents.includes(selected)) selected = null;
+
+    let coopCount = 0, totalActions = 0;
+    for (const g of games) {
+      const pair = randomPair(); if (!pair) continue;
+      const [A, B] = pair;
+      for (let r = 0; r < ROUNDS; r++) {
+        const aA = decide(A, B), bA = decide(B, A);
+        totalActions += 2;
+        if (aA === 'Cooperate') coopCount++;
+        if (bA === 'Cooperate') coopCount++;
+        if (aA === 'Cooperate' && bA === 'Cooperate') { A.resources += 1; B.resources += 1; }
+        else if (aA === 'Defect' && bA === 'Defect') { /* 0,0 */ }
+        else if (aA === 'Defect') { A.resources += 2; B.resources -= 1; }
+        else { B.resources += 2; A.resources -= 1; }
+      }
+    }
+
+    const nextGen = [];
+    for (const a of agents) {
+      while (a.resources > 4 && nextGen.length + agents.length < 400) {
+        const child = {
+          x: wrap01(a.x + gaussian(0, a.speed)), y: wrap01(a.y + gaussian(0, a.speed)),
+          speed: Math.max(0.002, a.speed * gaussian(1, 0.1)), resources: 4,
+          tag: a.tag ^ (1 << randInt(16)),
+          tolerance: Math.min(1, Math.max(0, a.tolerance + gaussian(0, 0.05 + p.mutationRate))),
+        };
+        nextGen.push(child); a.resources -= 4;
+      }
+      nextGen.push(a);
+    }
+    agents = nextGen;
+
+    step += 1;
+    const coopRate = totalActions > 0 ? coopCount / totalActions : NaN;
+    const avgTol = agents.length ? agents.reduce((s, a) => s + a.tolerance, 0) / agents.length : NaN;
+    history.pop.push(agents.length);
+    history.coopRate.push(coopRate);
+    history.avgTolerance.push(avgTol);
+    history.avgSim.push(avgPairwiseSim());
+    if (history.pop.length > 500) { for (const k in history) history[k].shift(); }
+
+    render(); updateChart(false); updateStats(coopRate); updateInspect();
+
+    // auto-loop: restart on collapse or after a long stable run
+    if (autoLoop && (agents.length < 2 || step >= 260)) {
+      setTimeout(() => { if (autoLoop) reset(); }, 700);
+    }
+  }
+
+  const canvas = $('world'), ctx = canvas.getContext('2d');
+  function render() {
+    const W = canvas.width, H = canvas.height;
+    ctx.fillStyle = '#101418'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#374151';
+    for (const g of games) ctx.fillRect(g.x * W - 3, g.y * H - 3, 6, 6);
+    for (const a of agents) {
+      const r = Math.max(2.5, Math.min(9, 3 + a.resources * 0.8));
+      ctx.beginPath();
+      ctx.fillStyle = hueColor(a.tag);
+      ctx.globalAlpha = 0.9;
+      ctx.arc(a.x * W, a.y * H, r, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    if (selected && agents.includes(selected)) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(selected.x * W, selected.y * H, 11, 0, 2 * Math.PI);
+      ctx.stroke();
+    }
+  }
+
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width;
+    const my = (e.clientY - rect.top) / rect.height;
+    let best = null, bestD = 0.05;
+    for (const a of agents) {
+      const dx = a.x - mx, dy = a.y - my, d = Math.sqrt(dx * dx + dy * dy);
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    selected = best; render(); updateInspect();
+  });
+
+  function updateInspect() {
+    if (!selected || !agents.includes(selected)) {
+      $('inspect').innerHTML = 'Click an agent to inspect its tag, tolerance, and how similar the rest of the population is to it.';
+      return;
+    }
+    const s = selected;
+    let mean = 0, coopCount = 0;
+    for (const a of agents) if (a !== s) {
+      const sim = tagSimilarity(s.tag, a.tag);
+      mean += sim;
+      if (sim >= s.tolerance) coopCount++;
+    }
+    const n = agents.length - 1;
+    mean = n ? mean / n : NaN;
+    const pct = n ? (100 * coopCount / n).toFixed(0) : '–';
+    $('inspect').innerHTML =
+      `<span class="swatch" style="background:${hueColor(s.tag)}"></span>` +
+      `<b>tag</b> 0x${s.tag.toString(16).padStart(4, '0')} · ` +
+      `<b>tolerance</b> ${s.tolerance.toFixed(2)} · <b>resources</b> ${s.resources.toFixed(1)}<br/>` +
+      `mean tag-similarity to population: <b>${isFinite(mean) ? mean.toFixed(2) : '–'}</b> · ` +
+      `would cooperate with <b>${pct}%</b> of others`;
+  }
+
+  let chart = null;
+  function initChart() {
+    chart = new Chart($('chart').getContext('2d'), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'Population', data: [], borderColor: '#2563eb', yAxisID: 'y', pointRadius: 0, tension: 0.15 },
+        { label: 'Cooperation rate', data: [], borderColor: '#22c55e', yAxisID: 'y1', pointRadius: 0, tension: 0.15 },
+        { label: 'Avg. tolerance', data: [], borderColor: '#ef4444', yAxisID: 'y1', pointRadius: 0, tension: 0.15, borderDash: [4, 3] },
+        { label: 'Avg. pairwise tag similarity', data: [], borderColor: '#a855f7', yAxisID: 'y1', pointRadius: 0, tension: 0.15, borderDash: [2, 2] },
+      ] },
+      options: {
+        responsive: true, animation: false, interaction: { intersect: false, mode: 'index' },
+        scales: {
+          y: { position: 'left', title: { display: true, text: 'Population' } },
+          y1: { position: 'right', min: 0, max: 1, grid: { drawOnChartArea: false }, title: { display: true, text: '0 – 1' } },
+        },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10.5 } } } },
+      },
+    });
+  }
+  function updateChart(clear) {
+    if (!chart) return;
+    if (clear) { chart.data.labels = []; chart.data.datasets.forEach(d => d.data = []); chart.update(); return; }
+    chart.data.labels.push(step);
+    chart.data.datasets[0].data.push(history.pop.at(-1));
+    chart.data.datasets[1].data.push(history.coopRate.at(-1));
+    chart.data.datasets[2].data.push(history.avgTolerance.at(-1));
+    chart.data.datasets[3].data.push(history.avgSim.at(-1));
+    if (chart.data.labels.length > 500) { chart.data.labels.shift(); chart.data.datasets.forEach(d => d.data.shift()); }
+    chart.update('none');
+  }
+  function updateStats(coopRate) {
+    const avgTol = agents.length ? agents.reduce((s, a) => s + a.tolerance, 0) / agents.length : NaN;
+    $('stats').innerHTML = [
+      `<div>Step: <b>${step}</b></div>`,
+      `<div>Population: <b>${agents.length}</b></div>`,
+      `<div>Avg. tolerance: <b>${isFinite(avgTol) ? avgTol.toFixed(2) : '–'}</b></div>`,
+      `<div>Cooperation rate: <b>${isFinite(coopRate) ? (coopRate * 100).toFixed(0) + '%' : '–'}</b></div>`,
+      `<div>Avg. pairwise sim: <b>${isFinite(history.avgSim.at(-1)) ? history.avgSim.at(-1).toFixed(2) : '–'}</b></div>`,
+    ].join('');
+  }
+
+  function syncLabels() {
+    $('initialPopulationVal').textContent = $('initialPopulation').value;
+    $('mutationRateVal').textContent = (parseInt($('mutationRate').value, 10) / 100).toFixed(2);
+    $('speedVal').textContent = $('speed').value + ' steps/s';
+    $('loopBadge').textContent = autoLoop ? '● auto-looping' : '';
+  }
+  function stopAutoLoop() { autoLoop = false; syncLabels(); }
+
+  ['initialPopulation', 'mutationRate', 'speed'].forEach(id =>
+    $(id).addEventListener('input', () => { stopAutoLoop(); syncLabels(); }));
+  ['initialPopulation'].forEach(id =>
+    $(id).addEventListener('change', () => { stopAutoLoop(); reset(); }));
+
+  function setRunning(next) {
+    running = next;
+    $('playPause').textContent = running ? '⏸ Pause' : '▶ Play';
+    if (timer) { clearInterval(timer); timer = null; }
+    if (running) timer = setInterval(stepWorld, 1000 / params().speed);
+  }
+  $('playPause').addEventListener('click', () => { stopAutoLoop(); setRunning(!running); });
+  $('resetBtn').addEventListener('click', () => { reset(); if (!running) setRunning(true); });
+  $('speed').addEventListener('input', () => { if (running) setRunning(true); });
+
+  syncLabels(); initChart(); reset(); setRunning(true);
+})();
+</script>
+
+</body>
+</html>
