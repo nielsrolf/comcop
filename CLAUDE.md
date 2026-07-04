@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents such as claude code or codex when working with code in this repository.
 
 ## Overview
 
@@ -136,3 +136,4 @@ These require API keys set in environment variables:
 - `TOGETHER_API_KEY`
 
 Currently unused in the active simulation but available for extending agents with LLM reasoning.
+

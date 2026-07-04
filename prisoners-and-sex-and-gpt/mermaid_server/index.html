@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Mermaid Diagram Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.3.1/mermaid.min.js"></script>
+    <style>
+       .messageLine0 {
+        marker-end: url(#arrowhead) !important;
+       }
+    </style>
+</head>
+
+<body style="background-color: black;">
+    <div id="mermaid_container">
+    </div>
+
+    <script>
+        mermaid.initialize({ startOnLoad: true, theme: 'dark' });
+
+        const eventSource = new EventSource('/events');
+
+        eventSource.onmessage = (event) => {
+            console.log(event.data);
+
+            // Clear the Mermaid container
+            const container = document.querySelector('#mermaid_container');
+            container.innerHTML = '';
+
+            // Set the new diagram text
+            const div = document.createElement('div');
+            div.className = 'mermaid';
+            div.textContent = event.data;
+            container.appendChild(div);
+
+            // Reinitialize Mermaid
+            mermaid.init(undefined, div);
+        };
+
+    </script>
+</body>
