@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Experiment 1 — Location & Cooperation</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; padding: 12px 14px 18px; background: #fafafa; color: #1a1a1a; }
+  h2 { margin: 0 0 3px; font-size: 16px; }
+  p.sub { margin: 0 0 10px; color: #555; font-size: 12.5px; max-width: 900px; }
+  .cols { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .col { flex: 1 1 300px; min-width: 280px; background: #fff; border: 1px solid #e2e2e2;
+    border-radius: 10px; padding: 10px 12px; }
+  .col h3 { margin: 0 0 6px; font-size: 13.5px; }
+  canvas.world { background: #101418; border-radius: 8px; display: block; width: 100%; height: auto; cursor: pointer; }
+  .stats { font-size: 12px; margin-top: 7px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .legend-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; }
+  .btnrow { display:flex; gap:8px; margin: 10px 0 4px; flex-wrap: wrap; align-items: center; }
+  button { border:none; border-radius:6px; padding:6px 12px; font-size:12.5px; font-weight:600;
+    cursor:pointer; background:#2563eb; color:#fff; }
+  button.secondary { background:#6b7280; }
+  .note { font-size:11.5px; color:#777; margin-top:6px; line-height:1.4; }
+  .chartwrap { flex: 1 1 100%; background:#fff; border:1px solid #e2e2e2; border-radius:10px; padding:10px 12px; margin-top:4px; }
+  .inspect { font-size:11.5px; margin-top:6px; min-height: 30px; color:#333; background:#f3f4f6; border-radius:6px; padding:6px 8px; }
+  .loopbadge { font-size:11px; color:#2563eb; font-weight:600; }
+</style>
+</head>
+<body>
+<h2>Experiment 1 — Location manufactures kin-assortment</h2>
+<p class="sub">Identical founding population (15 green CooperateBots + 15 red DefectBots) evolving under
+two pairing rules, side by side. <b>Left:</b> spatial pairing — the two agents nearest each game (black square)
+play. <b>Right:</b> well-mixed — co-players drawn uniformly at random. Auto-loops; press Play/Reset to take control.
+Click any agent to inspect it.</p>
+
+<div class="btnrow">
+  <button id="playPause">⏸ Pause</button>
+  <button id="resetBtn" class="secondary">Reset</button>
+  <span id="loopBadge" class="loopbadge">auto-looping demo</span>
+</div>
+
+<div class="cols">
+  <div class="col">
+    <h3>Spatial pairing (location matters)</h3>
+    <canvas class="world" id="worldS" width="360" height="360"></canvas>
+    <div class="stats" id="statsS"></div>
+    <div class="inspect" id="inspectS">Click an agent to inspect it.</div>
+  </div>
+  <div class="col">
+    <h3>Well-mixed pairing (no location effect)</h3>
+    <canvas class="world" id="worldR" width="360" height="360"></canvas>
+    <div class="stats" id="statsR"></div>
+    <div class="inspect" id="inspectR">Click an agent to inspect it.</div>
+  </div>
+  <div class="chartwrap">
+    <canvas id="chart" height="150"></canvas>
+    <div class="note">Solid = spatial world, dashed = well-mixed world. Green = cooperator count, red = defector count.
+      Reward per round matches <code>games.py</code>: cooperators grow the pie, but a lone defector out-earns its partner.</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  function gaussian(m, s){let u=0,v=0;while(u===0)u=Math.random();while(v===0)v=Math.random();
+    return m+s*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+  function wrap01(x){x=x%1;return x<0?x+1:x;}
+  function tdist(ax,ay,bx,by){let dx=Math.abs(ax-bx);dx=Math.min(dx,1-dx);
+    let dy=Math.abs(ay-by);dy=Math.min(dy,1-dy);return Math.sqrt(dx*dx+dy*dy);}
+
+  const N_COOP=15, N_DEF=15, SPEED=0.03, ROUNDS=4, MAXPOP=260, LOOP_STEPS=120;
+
+  function World(mode){
+    return { mode, agents:[], games:[], step:0, hist:{coop:[],def:[]}, selected:null };
+  }
+  let ws, wr, seedBase=Date.now();
+
+  function makeAgents(seedOffset){
+    const a=[];
+    for(let i=0;i<N_COOP;i++) a.push(mk('Cooperate'));
+    for(let i=0;i<N_DEF;i++) a.push(mk('Defect'));
+    return a;
+  }
+  function mk(strategy){
+    return { x:Math.random(), y:Math.random(), speed:SPEED, resources:4,
+      strategy, id:Math.random().toString(36).slice(2,7), gen:0, born:0, kids:0 };
+  }
+  function resetWorld(w, sharedAgents){
+    // Both worlds start from a deep copy of the SAME founding population.
+    w.agents = sharedAgents.map(a=>({...a}));
+    const ng=Math.max(1, Math.floor(w.agents.length/2));
+    w.games=Array.from({length:ng},()=>({x:Math.random(),y:Math.random()}));
+    w.step=0; w.hist={coop:[],def:[]}; w.selected=null;
+  }
+  function resetBoth(){
+    const founding=makeAgents();
+    ws=World('spatial'); wr=World('random');
+    resetWorld(ws, founding); resetWorld(wr, founding);
+    clearChart();
+  }
+
+  function pairFor(w, game){
+    if(w.agents.length<2) return null;
+    if(w.mode==='random'){
+      const i=Math.floor(Math.random()*w.agents.length);
+      let j=Math.floor(Math.random()*w.agents.length); while(j===i) j=Math.floor(Math.random()*w.agents.length);
+      return [w.agents[i], w.agents[j]];
+    }
+    const s=[...w.agents].sort((a,b)=>tdist(a.x,a.y,game.x,game.y)-tdist(b.x,b.y,game.x,game.y));
+    return [s[0], s[1]];
+  }
+
+  function stepWorld(w){
+    for(const a of w.agents){ a.resources-=1; a.x=wrap01(a.x+gaussian(0,a.speed)); a.y=wrap01(a.y+gaussian(0,a.speed)); }
+    w.agents=w.agents.filter(a=>a.resources>=0);
+    for(const g of w.games){
+      const pr=pairFor(w,g); if(!pr) continue; const [A,B]=pr;
+      for(let r=0;r<ROUNDS;r++){
+        const aa=A.strategy, bb=B.strategy;
+        if(aa==='Cooperate'&&bb==='Cooperate'){A.resources+=1;B.resources+=1;}
+        else if(aa==='Defect'&&bb==='Defect'){/*0*/}
+        else if(aa==='Defect'){A.resources+=2;B.resources-=1;}
+        else {B.resources+=2;A.resources-=1;}
+      }
+    }
+    const next=[];
+    for(const a of w.agents){
+      while(a.resources>4 && next.length+w.agents.length<MAXPOP){
+        next.push({x:wrap01(a.x+gaussian(0,a.speed)), y:wrap01(a.y+gaussian(0,a.speed)),
+          speed:a.speed, resources:4, strategy:a.strategy, id:Math.random().toString(36).slice(2,7),
+          gen:a.gen+1, born:w.step, kids:0});
+        a.kids+=1; a.resources-=4;
+      }
+      next.push(a);
+    }
+    w.agents=next; w.step+=1;
+    w.hist.coop.push(w.agents.filter(a=>a.strategy==='Cooperate').length);
+    w.hist.def.push(w.agents.filter(a=>a.strategy==='Defect').length);
+  }
+
+  // ---- rendering ----
+  function draw(w, canvasId){
+    const c=$(canvasId), ctx=c.getContext('2d'), W=c.width, H=c.height;
+    ctx.fillStyle='#101418'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#9ca3af';
+    for(const g of w.games) ctx.fillRect(g.x*W-3, g.y*H-3, 6, 6);
+    for(const a of w.agents){
+      const r=Math.min(8,3+a.resources*0.7);
+      ctx.beginPath();
+      ctx.fillStyle=a.strategy==='Cooperate'?'#22c55e':'#ef4444';
+      ctx.globalAlpha=0.85; ctx.arc(a.x*W,a.y*H,Math.max(2,r),0,2*Math.PI); ctx.fill(); ctx.globalAlpha=1;
+    }
+    if(w.selected){
+      const a=w.selected;
+      ctx.strokeStyle='#fbbf24'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(a.x*W,a.y*H,11,0,2*Math.PI); ctx.stroke();
+    }
+  }
+  function stats(w, id){
+    const nc=w.agents.filter(a=>a.strategy==='Cooperate').length;
+    const nd=w.agents.length-nc;
+    $(id).innerHTML=`<span>step <b>${w.step}</b></span>`+
+      `<span><span class="legend-dot" style="background:#22c55e"></span>coop <b>${nc}</b></span>`+
+      `<span><span class="legend-dot" style="background:#ef4444"></span>defect <b>${nd}</b></span>`;
+  }
+
+  // ---- inspection ----
+  function attachClick(w, canvasId, inspectId){
+    const c=$(canvasId);
+    c.addEventListener('click',(e)=>{
+      const rect=c.getBoundingClientRect();
+      const mx=(e.clientX-rect.left)/rect.width, my=(e.clientY-rect.top)/rect.height;
+      let best=null,bd=1e9;
+      for(const a of w.agents){ const d=tdist(a.x,a.y,mx,my); if(d<bd){bd=d;best=a;} }
+      if(best && bd<0.06){
+        w.selected=best;
+        const nc=w.agents.filter(a=>a.strategy===best.strategy).length;
+        const kin=w.agents.filter(a=>a.strategy===best.strategy && tdist(a.x,a.y,best.x,best.y)<0.12).length-1;
+        $(inspectId).innerHTML=
+          `<b>${best.strategy}Bot</b> #${best.id} · gen ${best.gen} · born step ${best.born}<br>`+
+          `resources ${best.resources.toFixed(1)} · offspring ${best.kids} · speed ${best.speed.toFixed(3)}<br>`+
+          `same-strategy agents: ${nc} · same-strategy neighbors within r=0.12: ${kin}`;
+        draw(w, canvasId);
+      } else { w.selected=null; $(inspectId).textContent='Click an agent to inspect it.'; draw(w,canvasId); }
+    });
+  }
+
+  // ---- chart ----
+  let chart=null;
+  function initChart(){
+    chart=new Chart($('chart').getContext('2d'),{ type:'line',
+      data:{labels:[],datasets:[
+        {label:'coop (spatial)',data:[],borderColor:'#16a34a',pointRadius:0,tension:.15,borderWidth:2},
+        {label:'defect (spatial)',data:[],borderColor:'#dc2626',pointRadius:0,tension:.15,borderWidth:2},
+        {label:'coop (well-mixed)',data:[],borderColor:'#16a34a',pointRadius:0,tension:.15,borderDash:[4,3],borderWidth:1.5},
+        {label:'defect (well-mixed)',data:[],borderColor:'#dc2626',pointRadius:0,tension:.15,borderDash:[4,3],borderWidth:1.5},
+      ]},
+      options:{responsive:true,animation:false,maintainAspectRatio:false,
+        scales:{y:{title:{display:true,text:'Population'},beginAtZero:true}},
+        plugins:{legend:{position:'bottom',labels:{boxWidth:12,font:{size:10}}}}}});
+  }
+  function clearChart(){ if(!chart) return; chart.data.labels=[]; chart.data.datasets.forEach(d=>d.data=[]); chart.update(); }
+  function pushChart(){
+    chart.data.labels.push(ws.step);
+    chart.data.datasets[0].data.push(ws.hist.coop.at(-1));
+    chart.data.datasets[1].data.push(ws.hist.def.at(-1));
+    chart.data.datasets[2].data.push(wr.hist.coop.at(-1));
+    chart.data.datasets[3].data.push(wr.hist.def.at(-1));
+    chart.update('none');
+  }
+
+  // ---- loop ----
+  let running=true, userControlled=false, timer=null;
+  function tick(){
+    stepWorld(ws); stepWorld(wr);
+    draw(ws,'worldS'); draw(wr,'worldR');
+    stats(ws,'statsS'); stats(wr,'statsR');
+    pushChart();
+    const dead = ws.agents.length===0 && wr.agents.length===0;
+    if(!userControlled && (ws.step>=LOOP_STEPS || dead)){ resetBoth(); }
+  }
+  function setRunning(v){ running=v; $('playPause').textContent=running?'⏸ Pause':'▶ Play';
+    if(timer){clearInterval(timer);timer=null;} if(running) timer=setInterval(tick,140); }
+  $('playPause').addEventListener('click',()=>{ userControlled=true; $('loopBadge').textContent='manual'; setRunning(!running); });
+  $('resetBtn').addEventListener('click',()=>{ userControlled=true; $('loopBadge').textContent='manual'; resetBoth(); draw(ws,'worldS'); draw(wr,'worldR'); });
+
+  initChart(); resetBoth();
+  attachClick(ws,'worldS','inspectS'); attachClick(wr,'worldR','inspectR');
+  draw(ws,'worldS'); draw(wr,'worldR'); setRunning(true);
+})();
+</script>
+</body>
+</html>
