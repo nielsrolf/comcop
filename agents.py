@@ -3,7 +3,10 @@ import uuid
 import copy
 from collections import defaultdict
 
-from utils import get_random_name, get_random_id, random_color, rgb_to_binary, hamming_similarity
+from utils import (
+    get_random_name, get_random_id, random_color, rgb_to_binary,
+    hamming_similarity, rgb_vector_similarity, rgb_vector_to_hex, binary_to_rgb,
+)
 
 class RewardLogger():
     """List that logs every change to kva"""
@@ -273,6 +276,80 @@ class TagBot(Agent):
         # Mutate tolerance
         child.tolerance = min(1.0, max(0.0, child.tolerance + random.gauss(0, 0.05)))
 
+        return child
+
+
+class GradientTagBot(Agent):
+    """Green-beard agent whose 'look' is a *continuous* RGB color.
+
+    Motivation: TagBot's tag is a 24-bit string mutated by flipping exactly
+    one bit per birth. That makes the look move in coarse, discontinuous jumps
+    (a single bit can swing a whole channel by 128), and tag "distance" is a
+    Hamming count that ignores how close two colors actually are perceptually.
+
+    GradientTagBot instead stores the look as three floats in [0,1] and mutates
+    it *smoothly*: add zero-mean Gaussian noise to the RGB vector and clip back
+    into the valid [0,1]^3 cube. Offspring therefore drift by small color steps,
+    so lineages trace out a continuous gradient in color space and kin form
+    gradually-shading clusters rather than discrete bit-classes. Similarity is
+    the continuous `rgb_vector_similarity` (1 - normalized L1 distance) instead
+    of a bit-match fraction.
+
+    Everything else matches TagBot: a heritable `tolerance` in [0,1]; cooperate
+    with a co-player iff average look-similarity >= tolerance. `self.color` is
+    kept as a binary string synced from the RGB vector purely so the existing
+    visualization / World bookkeeping keeps working.
+    """
+
+    def __init__(self, resources=4, location=None, speed=0.1, tolerance=None,
+                 mutation_sigma=0.08):
+        super().__init__(resources, location, speed)
+        self.rgb = [random.random(), random.random(), random.random()]
+        self.mutation_sigma = mutation_sigma
+        self.tolerance = random.random() if tolerance is None else tolerance
+        self._sync_color()
+
+    def _sync_color(self):
+        self.color = rgb_to_binary(rgb_vector_to_hex(self.rgb))
+
+    async def get_next_action(self, observation, game):
+        co_players = [a for a in getattr(game, "current_players", []) if a is not self]
+        if not co_players:
+            return "Cooperate"
+        avg_similarity = sum(
+            rgb_vector_similarity(self.rgb, getattr(other, "rgb", None)
+                                  or self._hex_rgb(other))
+            for other in co_players
+        ) / len(co_players)
+        return "Cooperate" if avg_similarity >= self.tolerance else "Defect"
+
+    @staticmethod
+    def _hex_rgb(other):
+        # Fallback: derive an RGB vector from a bit-string-look agent so mixed
+        # populations still compare meaningfully.
+        h = binary_to_rgb(other.color).lstrip("#")
+        return [int(h[i:i+2], 16) / 255 for i in (0, 2, 4)]
+
+    def child(self, resources):
+        child = copy.deepcopy(self)
+        child.id = get_random_id()
+        child.rewards = RewardLogger({"agent_id": child.id}, resources)
+
+        child.tail = child.location
+        child.location = (
+            (self.location[0] + random.gauss(0, self.speed)) % 1,
+            (self.location[1] + random.gauss(0, self.speed)) % 1,
+        )
+        child.speed *= random.gauss(1, 0.1)
+
+        # Smooth gradient mutation: add Gaussian noise to RGB, clip to [0,1].
+        child.rgb = [
+            min(1.0, max(0.0, c + random.gauss(0, self.mutation_sigma)))
+            for c in self.rgb
+        ]
+        child._sync_color()
+
+        child.tolerance = min(1.0, max(0.0, child.tolerance + random.gauss(0, 0.05)))
         return child
 
 

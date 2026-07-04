@@ -27,6 +27,25 @@ def rgb_to_binary(rgb):
     return ' '.join([format(int(rgb[i:i+2], 16), '08b') for i in range(0, 6, 2)])
 
 
+def rgb_vector_similarity(rgb_a, rgb_b):
+    """Similarity between two continuous RGB vectors in [0,1]^3.
+
+    Returns 1.0 for identical colors and 0.0 for maximally distant ones,
+    using normalized L1 distance:  1 - mean(|a-b|) over the 3 channels.
+    This is the continuous analogue of `hamming_similarity` and is used by
+    GradientTagBot, whose "look" is a real-valued color that mutates by
+    adding Gaussian noise (a smooth gradient) rather than by flipping a bit.
+    """
+    if not rgb_a or not rgb_b or len(rgb_a) != len(rgb_b):
+        return 0.0
+    return 1.0 - sum(abs(a - b) for a, b in zip(rgb_a, rgb_b)) / len(rgb_a)
+
+
+def rgb_vector_to_hex(rgb):
+    """[r,g,b] floats in [0,1] -> '#rrggbb' hex string."""
+    return "#" + "".join(format(int(round(max(0.0, min(1.0, c)) * 255)), "02x") for c in rgb)
+
+
 def hamming_similarity(color_a, color_b):
     """Fraction of matching bits between two binary-string 'looks' (e.g. agent colors).
 
