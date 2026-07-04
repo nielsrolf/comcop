@@ -50,7 +50,8 @@ async def run_once(determinism, roi, n_agents=30, n_steps=80, seed=0):
 async def main():
     determinisms = [0.0, 0.25, 0.5, 0.75, 1.0]
     rois = [0.5, 1.0, 1.5, 2.0, 3.0]
-    seeds = [0, 1, 2]
+    # More seeds per cell => less noisy heatmaps and more reliable trends.
+    seeds = list(range(12))
 
     welfare = np.zeros((len(rois), len(determinisms)))
     aggr = np.zeros((len(rois), len(determinisms)))
