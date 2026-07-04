@@ -1,12 +1,21 @@
 """
-War vs Peace, part 2 -- how do things evolve *on average*, and is the effect
-robust across seeds?
+War vs Peace, part 2 -- location vs no-location, averaged over many seeds.
 
-The single heatmap in `war_peace_experiment.py` only reports the *final* state
-of each (determinism, RoI) cell. Here we instead record full per-step
-trajectories -- population, total welfare, mean evolved aggression, and mean
-weapon budget -- and average them across many seeds (with +/-1 SD bands) for a
-few contrasting environments:
+Two questions, one experiment:
+
+  1. Does *spatial structure* change the evolutionary outcome? We run the
+     identical setup under both pairing rules (see main.py):
+       * pairing="proximity" -> the agents nearest each game fight/trade, and
+         because children spawn beside parents, neighbours tend to be kin.
+       * pairing="random"    -> co-players are drawn uniformly; location is
+         irrelevant, the world is well-mixed.
+
+  2. Is the effect robust? Every trajectory is averaged over N_SEEDS runs and
+     reported as mean +/-1 SD, so nothing below is a single lucky seed.
+
+For each pairing we record full per-step trajectories -- population, total
+welfare, mean evolved aggression, and mean weapon budget -- for three
+contrasting environments:
 
   * "peaceful"  : low determinism, high RoI   -> evolution should disarm
   * "arms race" : high determinism, mid RoI   -> aggression + weapons climb
@@ -32,6 +41,8 @@ N_SEEDS = 20
 N_STEPS = 80
 N_AGENTS = 30
 
+PAIRINGS = ["proximity", "random"]
+
 CONDITIONS = {
     "peaceful":  dict(determinism=0.25, roi=2.0),
     "arms race": dict(determinism=1.00, roi=1.5),
@@ -44,14 +55,14 @@ STYLE = {
 }
 
 
-async def run_trajectory(determinism, roi, seed):
+async def run_trajectory(pairing, determinism, roi, seed):
     """Return per-step arrays (length N_STEPS) for one seed."""
     random.seed(seed)
     agents = [WarPeaceBot(speed=0.03) for _ in range(N_AGENTS)]
     games = [WarPeaceGame(capacity=2, determinism=determinism, roi=roi)
              for _ in range(N_AGENTS // 2)]
     world = World(agents=agents, games=games, resources_to_evolve=4.0,
-                  pairing="proximity")
+                  pairing=pairing)
 
     pop, welfare, aggr, weap = [], [], [], []
     for _ in range(N_STEPS):
@@ -70,11 +81,13 @@ async def run_trajectory(determinism, roi, seed):
 
 async def gather():
     out = {}
-    for name, cfg in CONDITIONS.items():
-        runs = [await run_trajectory(cfg["determinism"], cfg["roi"], s)
-                for s in range(N_SEEDS)]
-        out[name] = runs
-        print(f"done {name}: {cfg}")
+    for pairing in PAIRINGS:
+        out[pairing] = {}
+        for name, cfg in CONDITIONS.items():
+            runs = [await run_trajectory(pairing, cfg["determinism"], cfg["roi"], s)
+                    for s in range(N_SEEDS)]
+            out[pairing][name] = runs
+            print(f"done {pairing}/{name}: {cfg}")
     return out
 
 
@@ -84,15 +97,18 @@ def stats(runs, key):
 
 
 def summarize(data):
-    out = {"n_seeds": N_SEEDS, "n_steps": N_STEPS, "conditions": {}}
-    for name, runs in data.items():
-        cfg = CONDITIONS[name]
-        entry = {"determinism": cfg["determinism"], "roi": cfg["roi"]}
-        for key in ("pop", "welfare", "aggr", "weap"):
-            mean, sd = stats(runs, key)
-            entry[key + "_mean"] = np.nan_to_num(mean).tolist()
-            entry[key + "_sd"] = np.nan_to_num(sd).tolist()
-        out["conditions"][name] = entry
+    out = {"n_seeds": N_SEEDS, "n_steps": N_STEPS, "pairings": {}}
+    for pairing, conds in data.items():
+        block = {"conditions": {}}
+        for name, runs in conds.items():
+            cfg = CONDITIONS[name]
+            entry = {"determinism": cfg["determinism"], "roi": cfg["roi"]}
+            for key in ("pop", "welfare", "aggr", "weap"):
+                mean, sd = stats(runs, key)
+                entry[key + "_mean"] = np.nan_to_num(mean).tolist()
+                entry[key + "_sd"] = np.nan_to_num(sd).tolist()
+            block["conditions"][name] = entry
+        out["pairings"][pairing] = block
     return out
 
 
@@ -100,26 +116,33 @@ async def main():
     data = await gather()
     steps = np.arange(N_STEPS)
 
-    fig, axes = plt.subplots(1, 4, figsize=(18, 4.4))
     panels = [
         ("pop", "Population"),
         ("welfare", "Total welfare"),
         ("aggr", "Mean aggression P(attack)"),
         ("weap", "Mean weapon budget"),
     ]
-    for ax, (key, title) in zip(axes, panels):
-        for name, runs in data.items():
-            mean, sd = stats(runs, key)
-            c = STYLE[name]
-            ax.plot(steps, mean, color=c, lw=1.9, label=name)
-            ax.fill_between(steps, mean - sd, mean + sd, color=c, alpha=0.15)
-        ax.set_title(title)
-        ax.set_xlabel("step")
-        if key in ("aggr", "weap"):
-            ax.set_ylim(0, 1)
-    axes[0].legend(fontsize=9)
-    fig.suptitle(f"War vs Peace dynamics averaged over {N_SEEDS} seeds "
-                 f"(mean +/-1 SD)")
+    # Rows: proximity (location) vs random (well-mixed).
+    fig, axes = plt.subplots(len(PAIRINGS), 4, figsize=(18, 8.4), sharex=True)
+    for row, pairing in enumerate(PAIRINGS):
+        for col, (key, title) in enumerate(panels):
+            ax = axes[row, col]
+            for name, runs in data[pairing].items():
+                mean, sd = stats(runs, key)
+                c = STYLE[name]
+                ax.plot(steps, mean, color=c, lw=1.9, label=name)
+                ax.fill_between(steps, mean - sd, mean + sd, color=c, alpha=0.15)
+            if row == 0:
+                ax.set_title(title)
+            if row == len(PAIRINGS) - 1:
+                ax.set_xlabel("step")
+            if key in ("aggr", "weap"):
+                ax.set_ylim(0, 1)
+        tag = "proximity (location)" if pairing == "proximity" else "random (well-mixed)"
+        axes[row, 0].set_ylabel(f"{tag}\n", fontsize=11)
+    axes[0, 0].legend(fontsize=9)
+    fig.suptitle(f"War vs Peace: location (top) vs well-mixed (bottom), "
+                 f"mean +/-1 SD over {N_SEEDS} seeds")
     fig.tight_layout()
     fig.savefig("assets/war_peace_multiseed.png", dpi=140)
     print("Saved assets/war_peace_multiseed.png")
