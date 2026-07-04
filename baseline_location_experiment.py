@@ -17,6 +17,7 @@ and plot the two population trajectories side by side.
 import asyncio
 import random
 
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -39,35 +40,65 @@ async def run_world(pairing, n_steps=150, seed=0):
     return world
 
 
+async def run_many(pairing, seeds, n_steps=150):
+    """Run one pairing rule across many seeds; return per-step arrays of the
+    CooperateBot and DefectBot counts, aligned to a common length."""
+    coop_runs, defect_runs = [], []
+    for seed in seeds:
+        world = await run_world(pairing, n_steps=n_steps, seed=seed)
+        coop_runs.append([c.get("CooperateBot", 0) for c in world.population_history])
+        defect_runs.append([c.get("DefectBot", 0) for c in world.population_history])
+    length = min(len(r) for r in coop_runs)
+    coop = np.array([r[:length] for r in coop_runs], dtype=float)
+    defect = np.array([r[:length] for r in defect_runs], dtype=float)
+    return coop, defect
+
+
 async def main():
-    spatial = await run_world("proximity", seed=42)
-    mixed = await run_world("random", seed=42)
+    seeds = list(range(12))
+    n_steps = 150
+    spatial_coop, spatial_defect = await run_many("proximity", seeds, n_steps)
+    mixed_coop, mixed_defect = await run_many("random", seeds, n_steps)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
-    for ax, world, title in [
-        (axes[0], spatial, "Spatial pairing (location matters)"),
-        (axes[1], mixed, "Well-mixed pairing (no location effect)"),
+    for ax, coop, defect, title in [
+        (axes[0], spatial_coop, spatial_defect, "Spatial pairing (location matters)"),
+        (axes[1], mixed_coop, mixed_defect, "Well-mixed pairing (no location effect)"),
     ]:
-        coop = [c.get("CooperateBot", 0) for c in world.population_history]
-        defect = [c.get("DefectBot", 0) for c in world.population_history]
-        ax.stackplot(
-            range(len(coop)), coop, defect,
-            labels=["CooperateBot", "DefectBot"],
-            colors=["#2ca02c", "#d62728"], alpha=0.85,
-        )
+        steps = range(coop.shape[1])
+        for data, color, label in [
+            (coop, "#2ca02c", "CooperateBot"),
+            (defect, "#d62728", "DefectBot"),
+        ]:
+            mean = data.mean(axis=0)
+            sd = data.std(axis=0)
+            ax.plot(steps, mean, color=color, label=label, lw=2)
+            ax.fill_between(steps, mean - sd, mean + sd, color=color, alpha=0.2)
         ax.set_title(title)
         ax.set_xlabel("Step")
-    axes[0].set_ylabel("Population")
+    axes[0].set_ylabel("Population (mean $\\pm$ 1 SD)")
     axes[0].legend(loc="upper left")
-    fig.suptitle("Cooperators only win when location creates kin-assortment")
+    fig.suptitle(f"Cooperators only win when location creates kin-assortment "
+                 f"(mean of {len(seeds)} seeds)")
     fig.tight_layout()
     fig.savefig("assets/location_cooperation_population.png", dpi=140)
     print("Saved assets/location_cooperation_population.png")
 
-    final_spatial = spatial.population_history[-1]
-    final_mixed = mixed.population_history[-1]
-    print("Final (spatial):", dict(final_spatial))
-    print("Final (well-mixed):", dict(final_mixed))
+    import json
+    payload = {
+        "seeds": seeds,
+        "spatial": {"coop": spatial_coop.tolist(), "defect": spatial_defect.tolist()},
+        "mixed": {"coop": mixed_coop.tolist(), "defect": mixed_defect.tolist()},
+    }
+    with open("assets/location_cooperation_multiseed.json", "w") as f:
+        json.dump(payload, f)
+    print("Saved assets/location_cooperation_multiseed.json")
+
+    def final(coop, defect):
+        return (f"CooperateBot {coop[:, -1].mean():.1f}±{coop[:, -1].std():.1f}, "
+                f"DefectBot {defect[:, -1].mean():.1f}±{defect[:, -1].std():.1f}")
+    print("Final (spatial):", final(spatial_coop, spatial_defect))
+    print("Final (well-mixed):", final(mixed_coop, mixed_defect))
 
 
 if __name__ == "__main__":
