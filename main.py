@@ -15,15 +15,27 @@ from utils import *
 
 
 class World:
-    def __init__(self, agents, games, resources_to_evolve=4.0):
+    def __init__(self, agents, games, resources_to_evolve=4.0, pairing="proximity"):
+        """
+        pairing: "proximity" (default) selects the `capacity` agents closest to
+            each game's location, so agents interact more with spatial
+            neighbors ("siblings", since children spawn near parents). This is
+            the mechanism behind the location -> cooperation experiment.
+            "random" ignores location entirely and draws a uniformly random
+            subset of agents for each game instead, which is used to isolate
+            *tag-based* kin recognition (TagBot) from spatial assortment.
+        """
         self.agents = agents
         self.games = games
         self.resources_to_evolve = resources_to_evolve
+        self.pairing = pairing
         self.world_id = dt.datetime.now().strftime("%Y%m%d%H%M%S")
         os.makedirs(f'worlds/{self.world_id}', exist_ok=True)
         self.stopped_at_step = 0
         self.population_history = []
         self.color_history = []
+        self.tolerance_history = []
+        self.similarity_history = []
     
     def evolve(self):
         """When an agent has this many resources, they reproduce (copy themselves) and they lose resources"""
@@ -40,7 +52,10 @@ class World:
         return next_generation
     
     def select_for_game(self, agents, game):
-        """Select agents for a game based on proximity"""
+        """Select agents for a game, either by spatial proximity or uniformly at random"""
+        if self.pairing == "random":
+            k = min(game.capacity, len(agents))
+            return random.sample(agents, k)
         sorted_agents = sorted(agents, key=lambda a: self.distance(a.location, game.location))
         selected = sorted_agents[:game.capacity]
         return selected
@@ -57,6 +72,30 @@ class World:
     def name(self):
         return "Location-based World"
 
+    def _avg_tolerance(self):
+        """Mean kin-recognition tolerance among TagBot-like agents (None if there are none)."""
+        tolerances = [a.tolerance for a in self.agents if hasattr(a, "tolerance")]
+        return sum(tolerances) / len(tolerances) if tolerances else None
+
+    def _avg_pairwise_similarity(self, max_pairs=300):
+        """Mean tag (color) similarity across a random sample of agent pairs.
+
+        A cheap population-level proxy for "how kin-clustered is the gene
+        pool right now" -- rising similarity alongside falling variance in
+        tolerance is the signature of tag-based kin selection taking hold.
+        """
+        agents = self.agents
+        n = len(agents)
+        if n < 2:
+            return None
+        pairs_available = n * (n - 1) // 2
+        n_pairs = min(max_pairs, pairs_available)
+        sims = []
+        for _ in range(n_pairs):
+            a, b = random.sample(agents, 2)
+            sims.append(hamming_similarity(a.color, b.color))
+        return sum(sims) / len(sims)
+
     async def run(self, n_rounds, visualize_every=1):
         # kva.init(run_id=self.world_id)
         for i in tqdm(range(n_rounds)):
@@ -67,6 +106,8 @@ class World:
             # logged = kva.log(step=self.stopped_at_step + i, population=agents_count)
             self.population_history.append(agents_count)
             self.color_history.append([binary_to_rgb(agent.color) for agent in self.agents])
+            self.tolerance_history.append(self._avg_tolerance())
+            self.similarity_history.append(self._avg_pairwise_similarity())
             print(f"Step {self.stopped_at_step + i}: {agents_count}")
 
             random.shuffle(self.games)

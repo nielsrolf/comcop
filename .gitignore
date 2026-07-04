@@ -12,3 +12,9 @@ __pycache__/
 
 .DS_Store
 .claude/
+
+# Figures generated for the write-up should be committed even though we
+# gitignore *.png everywhere else (simulation frame dumps, worlds/, etc).
+!assets/
+!assets/*.png
+!assets/**/*.png

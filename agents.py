@@ -3,7 +3,7 @@ import uuid
 import copy
 from collections import defaultdict
 
-from utils import get_random_name, get_random_id, random_color, rgb_to_binary
+from utils import get_random_name, get_random_id, random_color, rgb_to_binary, hamming_similarity
 
 class RewardLogger():
     """List that logs every change to kva"""
@@ -109,14 +109,18 @@ class Rule:
         
         if not len(trajectory) == len(pattern):
             return False
-        
+
         # Check if the pattern matches the trajectory line by line
-        for p, t in zip(self.pattern, trajectory):
+        # NOTE: this used to zip(self.pattern, trajectory) i.e. the raw pattern
+        # *string* against the trajectory *line list*, which meant only the
+        # first character of each line was ever compared. Rules therefore
+        # almost never matched anything beyond the first token, so MutatingBot
+        # never really reused what it had learned. Fixed to compare line-by-line.
+        for p, t in zip(pattern, trajectory):
             # Check symbols
             for s_p, s_t in zip(p, t):
                 if s_p != '*' and s_p != s_t:
                     return False
-        print("Matched")
         return True
     
     def mutate(self):
@@ -208,6 +212,67 @@ class MutatingBot(Agent):
         # Mutate speed
         child.speed *= random.gauss(1, 0.1)
         
+        return child
+
+
+class TagBot(Agent):
+    """Minimal 'green-beard' / tag-based kin-recognition agent.
+
+    Every agent carries a costless, arbitrary, heritable, mutable "look"
+    (`self.color`, the same 24-bit binary string used for visualization
+    elsewhere) plus a heritable `tolerance` in [0, 1]: the minimum fraction
+    of matching bits a co-player's look must share for this agent to
+    cooperate with them.
+
+    tolerance == 0   -> cooperate with everyone (indiscriminate altruist)
+    tolerance == 1   -> cooperate with (almost) nobody, incl. most kin (xenophobe)
+    0 < tolerance < 1 -> cooperate selectively with agents that "look like family"
+
+    This is the piece that was missing for the "evolution of rules" experiment
+    described in the doc: MutatingBot's trajectory-matching rules never saw
+    an opponent's look at all, so no kin-conditioned strategy could ever
+    arise. TagBot instead makes the look a first-class, decidable input, and
+    lets evolution (mutation + differential reproduction) discover whatever
+    tolerance is fittest given the population's tag diversity and how games
+    are paired (see World(pairing=...) and kin_experiment.py).
+    """
+
+    def __init__(self, resources=4, location=None, speed=0.1, tolerance=None):
+        super().__init__(resources, location, speed)
+        self.color = random_color()  # the visible "look" / tag
+        self.tolerance = random.random() if tolerance is None else tolerance
+
+    async def get_next_action(self, observation, game):
+        co_players = [a for a in getattr(game, "current_players", []) if a is not self]
+        if not co_players:
+            return "Cooperate"
+        avg_similarity = sum(
+            hamming_similarity(self.color, other.color) for other in co_players
+        ) / len(co_players)
+        return "Cooperate" if avg_similarity >= self.tolerance else "Defect"
+
+    def child(self, resources):
+        child = copy.deepcopy(self)
+        child.id = get_random_id()
+        child.rewards = RewardLogger({"agent_id": child.id}, resources)
+
+        # Spawn child near parent with some random noise
+        child.tail = child.location
+        child.location = (
+            (self.location[0] + random.gauss(0, self.speed)) % 1,
+            (self.location[1] + random.gauss(0, self.speed)) % 1
+        )
+        child.speed *= random.gauss(1, 0.1)
+
+        # Mutate look: flip one random bit
+        bits = child.color.split(" ")
+        bit_to_flip = random.randint(0, len(bits) - 1)
+        bits[bit_to_flip] = str(int(not int(bits[bit_to_flip])))
+        child.color = " ".join(bits)
+
+        # Mutate tolerance
+        child.tolerance = min(1.0, max(0.0, child.tolerance + random.gauss(0, 0.05)))
+
         return child
 
 

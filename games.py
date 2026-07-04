@@ -46,14 +46,20 @@ class PrisonersDilemma(Game):
         return rewards * (len(actions))
     
     async def play(self, agents):
+        # Expose the current co-players on the game instance so agents can
+        # condition their decision on who else is playing (e.g. TagBot reads
+        # each co-player's `.color` to decide whether they "look like kin").
+        self.current_players = agents
+
         for agent in agents:
             await agent.notify("# Start PrisonersDilemma")
-        
+
         for round in range(self.rounds):
             actions = []
             for agent in agents:
                 actions.append(agent.react(f"// Round {round}: Please choose your next action.", options=self.action_description, game=self))
             actions = [await i for i in actions]
+            actions = self.apply_noise(actions)
             rewards = self.get_reward(actions)
             observation = "\n".join([
                 f"// {player.name} selected {action} and scored {reward}"

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Multiagent Dynamics Explorer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; padding: 14px 16px 20px;
+    background: #fafafa; color: #1a1a1a;
+  }
+  h2 { margin: 0 0 4px; font-size: 17px; }
+  p.sub { margin: 0 0 12px; color: #555; font-size: 13px; max-width: 900px; }
+  .layout { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .panel {
+    background: #fff; border: 1px solid #e2e2e2; border-radius: 10px; padding: 12px 14px;
+  }
+  .controls { flex: 1 1 260px; min-width: 250px; max-width: 300px; }
+  .viz { flex: 2 1 380px; min-width: 340px; }
+  .chartpanel { flex: 2 1 380px; min-width: 340px; }
+  .control-row { margin-bottom: 12px; }
+  .control-row label { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 600; margin-bottom: 3px; }
+  .control-row input[type=range] { width: 100%; }
+  .control-row select { width: 100%; padding: 4px; font-size: 12.5px; }
+  .checkbox-row { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; font-size: 13px; }
+  .btnrow { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  button {
+    border: none; border-radius: 6px; padding: 7px 12px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; background: #2563eb; color: white;
+  }
+  button.secondary { background: #6b7280; }
+  button:active { transform: translateY(1px); }
+  canvas#world { background: #101418; border-radius: 8px; display: block; width: 100%; height: auto; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; font-size: 12.5px; margin-top: 10px; }
+  .stats b { color: #111; }
+  .legend-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
+  .hint { font-size: 11.5px; color: #777; margin-top: 8px; line-height:1.4; }
+  .disabled-note { opacity: .45; }
+</style>
+</head>
+<body>
+
+<h2>Multiagent Dynamics Explorer</h2>
+<p class="sub">
+  A lightweight, in-browser re-implementation of the two evolutionary experiments described in the
+  doc. Configure the population and rules, then press Play — this runs entirely client-side, no server needed.
+</p>
+
+<div class="layout">
+
+  <div class="panel controls">
+    <div class="checkbox-row">
+      <input type="checkbox" id="kinRecognition" />
+      <label for="kinRecognition" style="margin:0;">Enable tag-based kin recognition (green-beard mode)</label>
+    </div>
+
+    <div class="control-row">
+      <label>Pairing mode <span id="pairingModeLbl"></span></label>
+      <select id="pairingMode">
+        <option value="spatial">Spatial (nearest neighbors play — "location exists")</option>
+        <option value="random">Well-mixed (uniformly random pairing)</option>
+      </select>
+    </div>
+
+    <div class="control-row" id="defectFractionRow">
+      <label>Initial defector fraction <span id="defectFractionVal">50%</span></label>
+      <input type="range" id="defectFraction" min="0" max="100" value="50" />
+    </div>
+
+    <div class="control-row">
+      <label>Initial population <span id="initialPopulationVal">40</span></label>
+      <input type="range" id="initialPopulation" min="10" max="120" value="40" />
+    </div>
+
+    <div class="control-row">
+      <label>Mutation strength <span id="mutationRateVal">0.05</span></label>
+      <input type="range" id="mutationRate" min="0" max="30" value="5" />
+    </div>
+
+    <div class="control-row">
+      <label>Simulation speed <span id="speedVal">6 steps/s</span></label>
+      <input type="range" id="speed" min="1" max="30" value="6" />
+    </div>
+
+    <div class="btnrow">
+      <button id="playPause">▶ Play</button>
+      <button id="stepBtn" class="secondary">Step</button>
+      <button id="resetBtn" class="secondary">Reset</button>
+    </div>
+
+    <div class="stats" id="stats"></div>
+    <div class="hint">
+      Dot color = agent's visible tag (kin-mode) or strategy (green = CooperateBot, red = DefectBot).
+      Black squares = games. Reward matrix per round: mutual cooperate +1/+1, mutual defect 0/0,
+      one-sided defect: defector +2, cooperator −1 — identical to <code>games.py:get_reward</code> for 2 players.
+    </div>
+  </div>
+
+  <div class="panel viz">
+    <canvas id="world" width="440" height="440"></canvas>
+  </div>
+
+  <div class="panel chartpanel">
+    <canvas id="chart" width="440" height="440"></canvas>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+
+  // ---------- RNG helpers ----------
+  function gaussian(mean, std) {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return mean + std * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
+  function randInt(n) { return Math.floor(Math.random() * n); }
+  function wrap01(x) { x = x % 1; return x < 0 ? x + 1 : x; }
+  function toroidalDist(ax, ay, bx, by) {
+    let dx = Math.abs(ax - bx); dx = Math.min(dx, 1 - dx);
+    let dy = Math.abs(ay - by); dy = Math.min(dy, 1 - dy);
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  function tagSimilarity(a, b) {
+    // 16-bit tags, similarity = fraction of matching bits
+    let x = (a ^ b) & 0xFFFF;
+    let diff = 0;
+    while (x) { diff += x & 1; x >>= 1; }
+    return 1 - diff / 16;
+  }
+  function hueColor(tag) {
+    const hue = (tag / 65535) * 360;
+    return `hsl(${hue.toFixed(0)}, 65%, 50%)`;
+  }
+
+  // ---------- Simulation state ----------
+  let agents = [];
+  let games = [];
+  let step = 0;
+  let running = false;
+  let timer = null;
+  let history = { pop: [], coopRate: [], avgTolerance: [] };
+
+  function params() {
+    return {
+      kinRecognition: $('kinRecognition').checked,
+      pairingMode: $('pairingMode').value,
+      defectFraction: parseInt($('defectFraction').value, 10) / 100,
+      initialPopulation: parseInt($('initialPopulation').value, 10),
+      mutationRate: parseInt($('mutationRate').value, 10) / 100,
+      speed: parseInt($('speed').value, 10),
+    };
+  }
+
+  function makeAgent(p) {
+    return {
+      x: Math.random(), y: Math.random(),
+      speed: 0.02,
+      resources: 4,
+      tag: randInt(65536),
+      tolerance: Math.random(),
+      strategy: Math.random() < p.defectFraction ? 'Defect' : 'Cooperate',
+    };
+  }
+
+  function reset() {
+    const p = params();
+    agents = Array.from({ length: p.initialPopulation }, () => makeAgent(p));
+    const nGames = Math.max(1, Math.floor(p.initialPopulation / 2));
+    games = Array.from({ length: nGames }, () => ({ x: Math.random(), y: Math.random() }));
+    step = 0;
+    history = { pop: [], coopRate: [], avgTolerance: [] };
+    render();
+    updateChart(true);
+    updateStats(null);
+  }
+
+  function decide(agent, opponent, p) {
+    if (p.kinRecognition) {
+      return tagSimilarity(agent.tag, opponent.tag) >= agent.tolerance ? 'Cooperate' : 'Defect';
+    }
+    return agent.strategy;
+  }
+
+  function pairFor(game, p) {
+    if (agents.length < 2) return null;
+    if (p.pairingMode === 'random') {
+      const i = randInt(agents.length);
+      let j = randInt(agents.length);
+      while (j === i) j = randInt(agents.length);
+      return [agents[i], agents[j]];
+    }
+    const sorted = [...agents].sort((a, b) =>
+      toroidalDist(a.x, a.y, game.x, game.y) - toroidalDist(b.x, b.y, game.x, game.y));
+    return [sorted[0], sorted[1]];
+  }
+
+  const ROUNDS = 3;
+
+  function stepWorld() {
+    const p = params();
+
+    // eating cost + movement
+    for (const a of agents) {
+      a.resources -= 1;
+      a.x = wrap01(a.x + gaussian(0, a.speed));
+      a.y = wrap01(a.y + gaussian(0, a.speed));
+    }
+    agents = agents.filter(a => a.resources >= 0);
+
+    // play games
+    let coopCount = 0, totalActions = 0;
+    for (const game of games) {
+      const pair = pairFor(game, p);
+      if (!pair) continue;
+      const [A, B] = pair;
+      for (let r = 0; r < ROUNDS; r++) {
+        const aAction = decide(A, B, p);
+        const bAction = decide(B, A, p);
+        totalActions += 2;
+        if (aAction === 'Cooperate') coopCount++;
+        if (bAction === 'Cooperate') coopCount++;
+        if (aAction === 'Cooperate' && bAction === 'Cooperate') { A.resources += 1; B.resources += 1; }
+        else if (aAction === 'Defect' && bAction === 'Defect') { /* 0, 0 */ }
+        else if (aAction === 'Defect') { A.resources += 2; B.resources -= 1; }
+        else { B.resources += 2; A.resources -= 1; }
+      }
+    }
+
+    // reproduction
+    const nextGen = [];
+    for (const a of agents) {
+      while (a.resources > 4 && nextGen.length + agents.length < 400) {
+        const child = {
+          x: wrap01(a.x + gaussian(0, a.speed)),
+          y: wrap01(a.y + gaussian(0, a.speed)),
+          speed: Math.max(0.002, a.speed * gaussian(1, 0.1)),
+          resources: 4,
+          tag: a.tag,
+          tolerance: a.tolerance,
+          strategy: a.strategy,
+        };
+        // mutate tag: flip one random bit
+        child.tag = child.tag ^ (1 << randInt(16));
+        // mutate tolerance
+        child.tolerance = Math.min(1, Math.max(0, child.tolerance + gaussian(0, 0.05 + p.mutationRate)));
+        nextGen.push(child);
+        a.resources -= 4;
+      }
+      nextGen.push(a);
+    }
+    agents = nextGen;
+
+    step += 1;
+    const coopRate = totalActions > 0 ? coopCount / totalActions : NaN;
+    const avgTolerance = p.kinRecognition && agents.length
+      ? agents.reduce((s, a) => s + a.tolerance, 0) / agents.length
+      : NaN;
+    history.pop.push(agents.length);
+    history.coopRate.push(coopRate);
+    history.avgTolerance.push(avgTolerance);
+    if (history.pop.length > 500) {
+      history.pop.shift(); history.coopRate.shift(); history.avgTolerance.shift();
+    }
+
+    render();
+    updateChart(false);
+    updateStats(coopRate, avgTolerance);
+  }
+
+  // ---------- Rendering ----------
+  const canvas = $('world');
+  const ctx = canvas.getContext('2d');
+
+  function render() {
+    const p = params();
+    const W = canvas.width, H = canvas.height;
+    ctx.fillStyle = '#101418';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#e5e7eb';
+    for (const g of games) {
+      ctx.fillRect(g.x * W - 4, g.y * H - 4, 8, 8);
+    }
+
+    for (const a of agents) {
+      const r = Math.min(9, 3 + a.resources * 0.8);
+      ctx.beginPath();
+      ctx.fillStyle = p.kinRecognition ? hueColor(a.tag) : (a.strategy === 'Cooperate' ? '#22c55e' : '#ef4444');
+      ctx.globalAlpha = 0.85;
+      ctx.arc(a.x * W, a.y * H, Math.max(2, r), 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---------- Chart ----------
+  let chart = null;
+  function initChart() {
+    const ctx2 = $('chart').getContext('2d');
+    chart = new Chart(ctx2, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'Population', data: [], borderColor: '#2563eb', yAxisID: 'y', pointRadius: 0, tension: 0.15 },
+          { label: 'Cooperation rate', data: [], borderColor: '#22c55e', yAxisID: 'y1', pointRadius: 0, tension: 0.15 },
+          { label: 'Avg. tolerance (kin-mode)', data: [], borderColor: '#ef4444', yAxisID: 'y1', pointRadius: 0, tension: 0.15, borderDash: [4, 3] },
+        ],
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        interaction: { intersect: false, mode: 'index' },
+        scales: {
+          y: { position: 'left', title: { display: true, text: 'Population' } },
+          y1: { position: 'right', min: 0, max: 1, grid: { drawOnChartArea: false }, title: { display: true, text: '0 – 1' } },
+        },
+        plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } } },
+      },
+    });
+  }
+
+  function updateChart(clear) {
+    if (!chart) return;
+    if (clear) {
+      chart.data.labels = [];
+      chart.data.datasets.forEach(d => d.data = []);
+      chart.update();
+      return;
+    }
+    chart.data.labels.push(step);
+    chart.data.datasets[0].data.push(history.pop[history.pop.length - 1]);
+    chart.data.datasets[1].data.push(history.coopRate[history.coopRate.length - 1]);
+    chart.data.datasets[2].data.push(history.avgTolerance[history.avgTolerance.length - 1]);
+    if (chart.data.labels.length > 500) {
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(d => d.data.shift());
+    }
+    chart.update('none');
+  }
+
+  function updateStats(coopRate, avgTolerance) {
+    const p = params();
+    const parts = [
+      `<div>Step: <b>${step}</b></div>`,
+      `<div>Population: <b>${agents.length}</b></div>`,
+    ];
+    if (!p.kinRecognition) {
+      const nCoop = agents.filter(a => a.strategy === 'Cooperate').length;
+      parts.push(`<div><span class="legend-dot" style="background:#22c55e"></span>CooperateBot: <b>${nCoop}</b></div>`);
+      parts.push(`<div><span class="legend-dot" style="background:#ef4444"></span>DefectBot: <b>${agents.length - nCoop}</b></div>`);
+    } else {
+      const avgTol = agents.length ? (agents.reduce((s, a) => s + a.tolerance, 0) / agents.length) : NaN;
+      parts.push(`<div>Avg. tolerance: <b>${isFinite(avgTol) ? avgTol.toFixed(2) : '–'}</b></div>`);
+      parts.push(`<div>Cooperation rate: <b>${isFinite(coopRate) ? (coopRate * 100).toFixed(0) + '%' : '–'}</b></div>`);
+    }
+    $('stats').innerHTML = parts.join('');
+  }
+
+  // ---------- Controls wiring ----------
+  function syncLabels() {
+    $('defectFractionVal').textContent = $('defectFraction').value + '%';
+    $('initialPopulationVal').textContent = $('initialPopulation').value;
+    $('mutationRateVal').textContent = (parseInt($('mutationRate').value, 10) / 100).toFixed(2);
+    $('speedVal').textContent = $('speed').value + ' steps/s';
+    const kin = $('kinRecognition').checked;
+    $('defectFractionRow').classList.toggle('disabled-note', kin);
+    $('defectFraction').disabled = kin;
+  }
+
+  ['defectFraction', 'initialPopulation', 'mutationRate', 'speed'].forEach(id => {
+    $(id).addEventListener('input', syncLabels);
+  });
+  ['kinRecognition', 'pairingMode', 'initialPopulation', 'defectFraction'].forEach(id => {
+    $(id).addEventListener('change', () => { syncLabels(); reset(); });
+  });
+
+  function setRunning(next) {
+    running = next;
+    $('playPause').textContent = running ? '⏸ Pause' : '▶ Play';
+    if (timer) { clearInterval(timer); timer = null; }
+    if (running) {
+      timer = setInterval(stepWorld, 1000 / params().speed);
+    }
+  }
+
+  $('playPause').addEventListener('click', () => setRunning(!running));
+  $('stepBtn').addEventListener('click', () => { if (!running) stepWorld(); });
+  $('resetBtn').addEventListener('click', () => { setRunning(false); reset(); });
+  $('speed').addEventListener('input', () => { if (running) setRunning(true); });
+
+  // ---------- Init ----------
+  syncLabels();
+  initChart();
+  reset();
+})();
+</script>
+
+</body>
+</html>
