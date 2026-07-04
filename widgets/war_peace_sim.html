@@ -1,0 +1,194 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>War vs Peace — 2D simulation (proximity pairing)</title>
+<style>
+  body { font-family:-apple-system,Segoe UI,Roboto,sans-serif; margin:0; padding:12px; color:#1a1a1a; background:#fff; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+  button,select { border:1px solid #ccc; background:#f6f6f6; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
+  button.active { background:#1f77b4; color:#fff; border-color:#1f77b4; }
+  .wrap { display:flex; gap:14px; flex-wrap:wrap; }
+  #stage { background:#0b0f19; border-radius:8px; }
+  .side { min-width:230px; font-size:13px; }
+  .stat { color:#333; margin:2px 0; }
+  .legend { font-size:12px; color:#555; margin-top:8px; line-height:1.5; }
+  #inspect { background:#f6f8fb; border:1px solid #e2e6ee; border-radius:8px; padding:8px 10px; margin-top:8px; min-height:96px; }
+  b { color:#111; }
+</style></head>
+<body>
+<div class="controls">
+  <button id="playBtn" class="active" onclick="toggle()">Pause</button>
+  <button onclick="reset(true)">New run</button>
+  <label>Environment
+    <select id="env" onchange="reset(true)">
+      <option value="peaceful">peaceful (det 0.25, RoI 2.0)</option>
+      <option value="arms">arms race (det 1.0, RoI 1.5)</option>
+      <option value="collapse">collapse (det 1.0, RoI 0.75)</option>
+    </select>
+  </label>
+  <span id="stepLbl" class="stat"></span>
+</div>
+<div class="wrap">
+  <canvas id="stage" width="440" height="440"></canvas>
+  <div class="side">
+    <div id="stats"></div>
+    <div id="inspect">Click an agent to inspect it.</div>
+    <div class="legend">
+      <b>How to read it</b><br>
+      • spikier star = more <b>weapons</b> (round = disarmed)<br>
+      • brighter = more <b>resources / welfare</b><br>
+      • hue = heritable lineage colour<br>
+      • <span style="color:#ff5252">red flash</span> = a fight this step<br>
+      • <span style="color:#4caf50">green link</span> = a peaceful trade
+    </div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('stage'), ctx=cv.getContext('2d'), W=cv.width, H=cv.height;
+const ENVS={peaceful:{det:0.25,roi:2.0},arms:{det:1.0,roi:1.5},collapse:{det:1.0,roi:0.75}};
+const CAP=2, LOOT=0.5, EVOLVE=4, SPEED=0.03, CAP_POP=260;
+let agents=[], games=[], links=[], step=0, running=true, selected=null, timer=null;
+
+function gauss(m,s){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return m+s*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+function wrap(x){x%=1;return x<0?x+1:x;}
+function clip01(x){return Math.min(1,Math.max(0,x));}
+function torus(a,g){let dx=Math.abs(a.x-g.x),dy=Math.abs(a.y-g.y);dx=Math.min(dx,1-dx);dy=Math.min(dy,1-dy);return dx*dx+dy*dy;}
+
+function mkAgent(){
+  const hue=Math.floor(Math.random()*360);
+  return {x:Math.random(),y:Math.random(),speed:SPEED,resources:EVOLVE,
+          weapon:Math.random(),aggr:Math.random(),hue,id:Math.random().toString(36).slice(2,7)};
+}
+function child(a){
+  return {x:wrap(a.x+gauss(0,a.speed)),y:wrap(a.y+gauss(0,a.speed)),
+          speed:Math.max(0,a.speed*gauss(1,0.1)),resources:EVOLVE,
+          weapon:clip01(a.weapon+gauss(0,0.05)),aggr:clip01(a.aggr+gauss(0,0.05)),
+          hue:(a.hue+gauss(0,6)+360)%360,id:Math.random().toString(36).slice(2,7)};
+}
+function reset(manual){
+  const n=30;
+  agents=Array.from({length:n},mkAgent);
+  games=Array.from({length:n/2|0},()=>({x:Math.random(),y:Math.random()}));
+  step=0; selected=null; links=[];
+  if(manual){running=true;$('playBtn').textContent='Pause';$('playBtn').classList.add('active');}
+  render(); stats();
+}
+// proximity pairing: the CAP agents nearest each game
+function selectForGame(g){
+  if(agents.length<=CAP) return agents.slice();
+  return agents.slice().sort((p,q)=>torus(p,g)-torus(q,g)).slice(0,CAP);
+}
+function stepWorld(){
+  const {det,roi}=ENVS[$('env').value];
+  links=[];
+  for(const g of games){
+    const pl=selectForGame(g);
+    if(pl.length<2) continue;
+    const [a,b]=pl;
+    const atkA=Math.random()<a.aggr, atkB=Math.random()<b.aggr;
+    if(atkA||atkB){
+      let winner,loser;
+      if(Math.random()<det){[winner,loser]=a.weapon>=b.weapon?[a,b]:[b,a];}
+      else {[winner,loser]=Math.random()<0.5?[a,b]:[b,a];}
+      const loot=LOOT*Math.max(0,loser.resources);
+      winner.resources+=loot; loser.resources-=loot;
+      links.push({a,b,type:'fight'});
+    } else {
+      a.resources+=roi*(1-a.weapon); b.resources+=roi*(1-b.weapon);
+      links.push({a,b,type:'peace'});
+    }
+  }
+  // evolve: upkeep, move, die, reproduce
+  const next=[];
+  for(const a of agents){
+    a.resources-=1;
+    a.x=wrap(a.x+gauss(0,a.speed)); a.y=wrap(a.y+gauss(0,a.speed));
+    if(a.resources<0) continue;
+    while(a.resources>EVOLVE && next.length+agents.length<CAP_POP){next.push(child(a));a.resources-=EVOLVE;}
+    next.push(a);
+  }
+  agents=next;
+  if(selected && !agents.includes(selected)) selected=null;
+  step++;
+  render(); stats();
+}
+function drawStar(x,y,r,spikes,rot,fill,stroke){
+  ctx.beginPath();
+  const inner=r*0.45;
+  for(let i=0;i<spikes*2;i++){
+    const rad=i%2? inner:r;
+    const ang=rot+Math.PI*i/spikes;
+    const px=x+Math.cos(ang)*rad, py=y+Math.sin(ang)*rad;
+    i?ctx.lineTo(px,py):ctx.moveTo(px,py);
+  }
+  ctx.closePath(); ctx.fillStyle=fill; ctx.fill();
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}
+}
+function render(){
+  ctx.fillStyle='#0b0f19'; ctx.fillRect(0,0,W,H);
+  // interaction links
+  for(const l of links){
+    ctx.beginPath();
+    ctx.moveTo(l.a.x*W,l.a.y*H); ctx.lineTo(l.b.x*W,l.b.y*H);
+    ctx.strokeStyle=l.type==='fight'?'rgba(255,82,82,0.8)':'rgba(76,175,80,0.7)';
+    ctx.lineWidth=l.type==='fight'?2.4:1.4; ctx.stroke();
+  }
+  for(const a of agents){
+    const x=a.x*W, y=a.y*H;
+    const light=25+55*Math.min(1,a.resources/6);      // brightness ~ welfare
+    const spikes=Math.max(0,Math.round(a.weapon*9));    // spikiness ~ weapons
+    const r=6+a.weapon*7;
+    const fill=`hsl(${a.hue},70%,${light}%)`;
+    if(spikes<3){ // round blob when disarmed
+      ctx.beginPath(); ctx.arc(x,y,7,0,2*Math.PI);
+      ctx.fillStyle=fill; ctx.fill();
+    } else {
+      drawStar(x,y,r,spikes,step*0.05,fill,null);
+    }
+    if(a===selected){ctx.beginPath();ctx.arc(x,y,r+5,0,2*Math.PI);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}
+  }
+}
+function stats(){
+  const n=agents.length;
+  const mean=k=>n?agents.reduce((s,a)=>s+a[k],0)/n:0;
+  const welfare=agents.reduce((s,a)=>s+a.resources,0);
+  $('stepLbl').textContent=`step ${step}`;
+  $('stats').innerHTML=
+    `<div class="stat"><b>Population:</b> ${n}</div>`+
+    `<div class="stat"><b>Total welfare:</b> ${welfare.toFixed(0)}</div>`+
+    `<div class="stat"><b>Mean weapon budget:</b> ${mean('weapon').toFixed(2)}</div>`+
+    `<div class="stat"><b>Mean aggression:</b> ${mean('aggr').toFixed(2)}</div>`;
+  if(selected) inspect();
+}
+function inspect(){
+  const a=selected; if(!a){$('inspect').textContent='Click an agent to inspect it.';return;}
+  // how many nearby agents are similar in weaponry
+  const near=agents.filter(o=>o!==a && torus(o,a)<0.02).length;
+  $('inspect').innerHTML=
+    `<b>Agent ${a.id}</b><br>`+
+    `resources (welfare): <b>${a.resources.toFixed(2)}</b><br>`+
+    `weapon_fraction: <b>${a.weapon.toFixed(2)}</b><br>`+
+    `aggression P(attack): <b>${a.aggr.toFixed(2)}</b><br>`+
+    `speed: ${a.speed.toFixed(3)}<br>`+
+    `neighbours within range: ${near}`;
+}
+cv.addEventListener('click',e=>{
+  const rect=cv.getBoundingClientRect();
+  const mx=(e.clientX-rect.left)/W, my=(e.clientY-rect.top)/H;
+  let best=null,bd=1e9;
+  for(const a of agents){const d=(a.x-mx)**2+(a.y-my)**2;if(d<bd){bd=d;best=a;}}
+  if(bd<0.002){selected=best;} else selected=null;
+  render(); inspect();
+});
+function toggle(){running=!running;$('playBtn').textContent=running?'Pause':'Play';$('playBtn').classList.toggle('active',running);}
+function loop(){
+  if(running){
+    if(agents.length===0) reset(false);      // auto-restart when a world dies (demo)
+    else { stepWorld(); if(step>=160) reset(false); }
+  }
+}
+reset(false);
+timer=setInterval(loop,180);
+</script>
+</body></html>
