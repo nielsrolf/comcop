@@ -353,6 +353,84 @@ class GradientTagBot(Agent):
         return child
 
 
+class UltimatumBot(Agent):
+    """Two-gene bargainer for the UltimatumGame.
+
+    Heritable genes (both in [0, 1], Gaussian-mutated per birth):
+      * ``offer``     -- fraction of the pie this agent offers when proposing.
+      * ``threshold`` -- minimum offer this agent will accept when responding.
+
+    A purely selfish equilibrium is offer -> 0, threshold -> 0 ("grab
+    everything, accept crumbs"). Whether the population instead evolves a
+    *fair* norm (offer ~ threshold ~ 0.5) is exactly what the experiment tests.
+    """
+
+    def __init__(self, resources=4, location=None, speed=0.1,
+                 offer=None, threshold=None):
+        super().__init__(resources, location, speed)
+        self.color = random_color()
+        self.offer = random.random() if offer is None else offer
+        self.threshold = random.random() if threshold is None else threshold
+
+    async def get_next_action(self, observation, game):
+        # Not used by UltimatumGame (which reads genes directly), but keep the
+        # Agent contract satisfied for mixed worlds.
+        return "Cooperate"
+
+    def child(self, resources):
+        child = copy.deepcopy(self)
+        child.id = get_random_id()
+        child.rewards = RewardLogger({"agent_id": child.id}, resources)
+        child.tail = child.location
+        child.location = (
+            (self.location[0] + random.gauss(0, self.speed)) % 1,
+            (self.location[1] + random.gauss(0, self.speed)) % 1,
+        )
+        child.speed *= random.gauss(1, 0.1)
+        child.offer = min(1.0, max(0.0, child.offer + random.gauss(0, 0.05)))
+        child.threshold = min(1.0, max(0.0, child.threshold + random.gauss(0, 0.05)))
+        return child
+
+
+class WarPeaceBot(Agent):
+    """Agent for the WarPeaceGame.
+
+    Heritable genes (both in [0, 1], Gaussian-mutated per birth):
+      * ``weapon_fraction`` -- share of budget spent on weapons (the rest is
+        peaceful capital that earns RoI in peace).
+      * ``aggression``      -- probability of choosing to attack on contact.
+
+    Evolution trades off two temptations: arming up wins fights and loot, but
+    burns capital that would otherwise compound peacefully. Which strategy is
+    fittest depends on how deterministic war outcomes are and how lucrative
+    peace is -- the two axes swept in Experiment 3.
+    """
+
+    def __init__(self, resources=4, location=None, speed=0.1,
+                 weapon_fraction=None, aggression=None):
+        super().__init__(resources, location, speed)
+        self.color = random_color()
+        self.weapon_fraction = random.random() if weapon_fraction is None else weapon_fraction
+        self.aggression = random.random() if aggression is None else aggression
+
+    async def get_next_action(self, observation, game):
+        return "Cooperate"
+
+    def child(self, resources):
+        child = copy.deepcopy(self)
+        child.id = get_random_id()
+        child.rewards = RewardLogger({"agent_id": child.id}, resources)
+        child.tail = child.location
+        child.location = (
+            (self.location[0] + random.gauss(0, self.speed)) % 1,
+            (self.location[1] + random.gauss(0, self.speed)) % 1,
+        )
+        child.speed *= random.gauss(1, 0.1)
+        child.weapon_fraction = min(1.0, max(0.0, child.weapon_fraction + random.gauss(0, 0.05)))
+        child.aggression = min(1.0, max(0.0, child.aggression + random.gauss(0, 0.05)))
+        return child
+
+
 class KinMutatingBot(MutatingBot):
     """MutatingBot that can *condition its learned rules on the co-player's look*.
 
