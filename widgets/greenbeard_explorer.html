@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Green-beard Simulation</title>
+<title>Gradient Green-beard — proximity pairing</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root { color-scheme: light; }
@@ -39,12 +39,13 @@
 </head>
 <body>
 
-<h2>Green-beard simulation — tag-based kin recognition, random pairing</h2>
+<h2>Gradient green-beard — smooth RGB look, proximity pairing</h2>
 <p class="sub">
-  Every agent carries a costless, heritable 16-bit <b>tag</b> (shown as its color) and a heritable
-  <b>tolerance</b> $\tau$. It cooperates with a co-player only if their tags match on a fraction $\ge \tau$ of bits.
-  Pairing is <b>uniformly random</b> — there is no spatial structure — so any cooperation that survives
-  comes purely from reading the tag. Runs auto-loop; click any agent to inspect it.
+  Every agent carries a heritable <b>RGB look</b> (its color, mutated by small Gaussian drift each birth)
+  and a heritable <b>tolerance</b> &tau;. It cooperates with its co-players only if their average look-similarity
+  is &ge; &tau;. Pairing is <b>by proximity</b>: each game recruits the agents nearest its location, so — because
+  children spawn beside their parents — neighbors tend to be kin. Tag recognition and spatial structure stack.
+  Runs auto-loop; click any agent to inspect it.
 </p>
 
 <div class="layout">
@@ -55,7 +56,7 @@
       <button id="resetBtn" class="secondary">New run</button>
       <span id="loopBadge" class="loopbadge"></span>
     </div>
-    <div class="inspect" id="inspect">Click an agent to inspect its tag, tolerance, and how similar the rest of the population is to it.</div>
+    <div class="inspect" id="inspect">Click an agent to inspect its look, tolerance, and how similar the rest of the population is to it.</div>
     <details>
       <summary>Configure</summary>
       <div class="control-row">
@@ -63,17 +64,22 @@
         <input type="range" id="initialPopulation" min="20" max="120" value="50" />
       </div>
       <div class="control-row">
-        <label>Tolerance mutation strength <span id="mutationRateVal">0.05</span></label>
-        <input type="range" id="mutationRate" min="0" max="20" value="5" />
+        <label>Look mutation &sigma; <span id="colorSigmaVal">0.08</span></label>
+        <input type="range" id="colorSigma" min="1" max="25" value="8" />
       </div>
       <div class="control-row">
-        <label>Speed <span id="speedVal">7 steps/s</span></label>
+        <label>Agent movement speed <span id="moveSpeedVal">0.02</span></label>
+        <input type="range" id="moveSpeed" min="0" max="30" value="2" />
+      </div>
+      <div class="control-row">
+        <label>Sim speed <span id="speedVal">7 steps/s</span></label>
         <input type="range" id="speed" min="1" max="30" value="7" />
       </div>
     </details>
     <div class="hint">
-      Per round, 2 players: mutual cooperate +1/+1, mutual defect 0/0, one-sided defect gives the
-      defector +2 and the cooperator −1 (matches <code>games.py</code>). Configuring anything stops the auto-loop.
+      Per round, players in a game: mutual cooperate +1 each, mutual defect 0, one-sided defect gives the
+      defector +2 and the cooperator −1 (matches <code>games.py</code>). Movement speed controls how much
+      location matters: fast movement scrambles kin clusters toward well-mixed. Configuring anything stops the auto-loop.
     </div>
   </div>
 
@@ -93,13 +99,15 @@
     return mean + std * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
   }
   function randInt(n) { return Math.floor(Math.random() * n); }
+  function clip01(x) { return Math.min(1, Math.max(0, x)); }
   function wrap01(x) { x = x % 1; return x < 0 ? x + 1 : x; }
-  function tagSimilarity(a, b) {
-    let x = (a ^ b) & 0xFFFF, diff = 0;
-    while (x) { diff += x & 1; x >>= 1; }
-    return 1 - diff / 16;
+  // continuous look similarity = 1 - mean|Δ| over RGB channels
+  function lookSimilarity(a, b) {
+    return 1 - (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])) / 3;
   }
-  function hueColor(tag) { return `hsl(${((tag / 65535) * 360).toFixed(0)}, 65%, 50%)`; }
+  function rgbColor(c) {
+    return `rgb(${(c[0]*255)|0}, ${(c[1]*255)|0}, ${(c[2]*255)|0})`;
+  }
 
   let agents = [], games = [], step = 0, running = true, timer = null, selected = null;
   let history = { pop: [], coopRate: [], avgTolerance: [], avgSim: [] };
@@ -108,13 +116,14 @@
   function params() {
     return {
       initialPopulation: parseInt($('initialPopulation').value, 10),
-      mutationRate: parseInt($('mutationRate').value, 10) / 100,
+      colorSigma: parseInt($('colorSigma').value, 10) / 100,
+      moveSpeed: parseInt($('moveSpeed').value, 10) / 100,
       speed: parseInt($('speed').value, 10),
     };
   }
   function makeAgent(p) {
-    return { x: Math.random(), y: Math.random(), speed: 0.02, resources: 4,
-             tag: randInt(65536), tolerance: Math.random() };
+    return { x: Math.random(), y: Math.random(), speed: p.moveSpeed, resources: 4,
+             rgb: [Math.random(), Math.random(), Math.random()], tolerance: Math.random() };
   }
   function reset() {
     const p = params();
@@ -125,16 +134,21 @@
     history = { pop: [], coopRate: [], avgTolerance: [], avgSim: [] };
     render(); updateChart(true); updateStats(NaN); updateInspect();
   }
-  function decide(a, opp) {
-    return tagSimilarity(a.tag, opp.tag) >= a.tolerance ? 'Cooperate' : 'Defect';
+  function decide(a, others) {
+    let s = 0; for (const o of others) s += lookSimilarity(a.rgb, o.rgb);
+    return (s / others.length) >= a.tolerance ? 'Cooperate' : 'Defect';
   }
-  function randomPair() {
-    if (agents.length < 2) return null;
-    const i = randInt(agents.length);
-    let j = randInt(agents.length); while (j === i) j = randInt(agents.length);
-    return [agents[i], agents[j]];
+  const CAP = 2, ROUNDS = 3;
+  function torusDist(a, g) {
+    let dx = Math.abs(a.x - g.x), dy = Math.abs(a.y - g.y);
+    dx = Math.min(dx, 1 - dx); dy = Math.min(dy, 1 - dy);
+    return dx * dx + dy * dy;
   }
-  const ROUNDS = 3;
+  // proximity pairing: the CAP agents nearest this game's location
+  function selectForGame(g) {
+    if (agents.length <= CAP) return agents.slice();
+    return agents.slice().sort((p, q) => torusDist(p, g) - torusDist(q, g)).slice(0, CAP);
+  }
 
   function avgPairwiseSim() {
     if (agents.length < 2) return NaN;
@@ -142,7 +156,7 @@
     const samples = Math.min(agents.length, 40);
     for (let k = 0; k < samples; k++) {
       const a = agents[randInt(agents.length)], b = agents[randInt(agents.length)];
-      if (a !== b) { s += tagSimilarity(a.tag, b.tag); n++; }
+      if (a !== b) { s += lookSimilarity(a.rgb, b.rgb); n++; }
     }
     return n ? s / n : NaN;
   }
@@ -159,17 +173,21 @@
 
     let coopCount = 0, totalActions = 0;
     for (const g of games) {
-      const pair = randomPair(); if (!pair) continue;
-      const [A, B] = pair;
+      const players = selectForGame(g);
+      if (players.length < 2) continue;
       for (let r = 0; r < ROUNDS; r++) {
-        const aA = decide(A, B), bA = decide(B, A);
-        totalActions += 2;
-        if (aA === 'Cooperate') coopCount++;
-        if (bA === 'Cooperate') coopCount++;
-        if (aA === 'Cooperate' && bA === 'Cooperate') { A.resources += 1; B.resources += 1; }
-        else if (aA === 'Defect' && bA === 'Defect') { /* 0,0 */ }
-        else if (aA === 'Defect') { A.resources += 2; B.resources -= 1; }
-        else { B.resources += 2; A.resources -= 1; }
+        const acts = players.map(a => decide(a, players.filter(o => o !== a)));
+        acts.forEach(a => { totalActions++; if (a === 'Cooperate') coopCount++; });
+        // pairwise PD payoffs within the group
+        for (let i = 0; i < players.length; i++) {
+          for (let j = i + 1; j < players.length; j++) {
+            const ai = acts[i], aj = acts[j];
+            if (ai === 'Cooperate' && aj === 'Cooperate') { players[i].resources += 1; players[j].resources += 1; }
+            else if (ai === 'Defect' && aj === 'Defect') { /* 0,0 */ }
+            else if (ai === 'Defect') { players[i].resources += 2; players[j].resources -= 1; }
+            else { players[j].resources += 2; players[i].resources -= 1; }
+          }
+        }
       }
     }
 
@@ -178,9 +196,9 @@
       while (a.resources > 4 && nextGen.length + agents.length < 400) {
         const child = {
           x: wrap01(a.x + gaussian(0, a.speed)), y: wrap01(a.y + gaussian(0, a.speed)),
-          speed: Math.max(0.002, a.speed * gaussian(1, 0.1)), resources: 4,
-          tag: a.tag ^ (1 << randInt(16)),
-          tolerance: Math.min(1, Math.max(0, a.tolerance + gaussian(0, 0.05 + p.mutationRate))),
+          speed: Math.max(0, a.speed * gaussian(1, 0.1)), resources: 4,
+          rgb: a.rgb.map(c => clip01(c + gaussian(0, p.colorSigma))),
+          tolerance: clip01(a.tolerance + gaussian(0, 0.05)),
         };
         nextGen.push(child); a.resources -= 4;
       }
@@ -199,7 +217,6 @@
 
     render(); updateChart(false); updateStats(coopRate); updateInspect();
 
-    // auto-loop: restart on collapse or after a long stable run
     if (autoLoop && (agents.length < 2 || step >= 260)) {
       setTimeout(() => { if (autoLoop) reset(); }, 700);
     }
@@ -214,7 +231,7 @@
     for (const a of agents) {
       const r = Math.max(2.5, Math.min(9, 3 + a.resources * 0.8));
       ctx.beginPath();
-      ctx.fillStyle = hueColor(a.tag);
+      ctx.fillStyle = rgbColor(a.rgb);
       ctx.globalAlpha = 0.9;
       ctx.arc(a.x * W, a.y * H, r, 0, 2 * Math.PI);
       ctx.fill();
@@ -242,13 +259,13 @@
 
   function updateInspect() {
     if (!selected || !agents.includes(selected)) {
-      $('inspect').innerHTML = 'Click an agent to inspect its tag, tolerance, and how similar the rest of the population is to it.';
+      $('inspect').innerHTML = 'Click an agent to inspect its look, tolerance, and how similar the rest of the population is to it.';
       return;
     }
     const s = selected;
     let mean = 0, coopCount = 0;
     for (const a of agents) if (a !== s) {
-      const sim = tagSimilarity(s.tag, a.tag);
+      const sim = lookSimilarity(s.rgb, a.rgb);
       mean += sim;
       if (sim >= s.tolerance) coopCount++;
     }
@@ -256,10 +273,10 @@
     mean = n ? mean / n : NaN;
     const pct = n ? (100 * coopCount / n).toFixed(0) : '–';
     $('inspect').innerHTML =
-      `<span class="swatch" style="background:${hueColor(s.tag)}"></span>` +
-      `<b>tag</b> 0x${s.tag.toString(16).padStart(4, '0')} · ` +
+      `<span class="swatch" style="background:${rgbColor(s.rgb)}"></span>` +
+      `<b>look</b> (${s.rgb.map(c => c.toFixed(2)).join(', ')}) · ` +
       `<b>tolerance</b> ${s.tolerance.toFixed(2)} · <b>resources</b> ${s.resources.toFixed(1)}<br/>` +
-      `mean tag-similarity to population: <b>${isFinite(mean) ? mean.toFixed(2) : '–'}</b> · ` +
+      `mean look-similarity to population: <b>${isFinite(mean) ? mean.toFixed(2) : '–'}</b> · ` +
       `would cooperate with <b>${pct}%</b> of others`;
   }
 
@@ -271,7 +288,7 @@
         { label: 'Population', data: [], borderColor: '#2563eb', yAxisID: 'y', pointRadius: 0, tension: 0.15 },
         { label: 'Cooperation rate', data: [], borderColor: '#22c55e', yAxisID: 'y1', pointRadius: 0, tension: 0.15 },
         { label: 'Avg. tolerance', data: [], borderColor: '#ef4444', yAxisID: 'y1', pointRadius: 0, tension: 0.15, borderDash: [4, 3] },
-        { label: 'Avg. pairwise tag similarity', data: [], borderColor: '#a855f7', yAxisID: 'y1', pointRadius: 0, tension: 0.15, borderDash: [2, 2] },
+        { label: 'Avg. pairwise look similarity', data: [], borderColor: '#a855f7', yAxisID: 'y1', pointRadius: 0, tension: 0.15, borderDash: [2, 2] },
       ] },
       options: {
         responsive: true, animation: false, interaction: { intersect: false, mode: 'index' },
@@ -307,15 +324,16 @@
 
   function syncLabels() {
     $('initialPopulationVal').textContent = $('initialPopulation').value;
-    $('mutationRateVal').textContent = (parseInt($('mutationRate').value, 10) / 100).toFixed(2);
+    $('colorSigmaVal').textContent = (parseInt($('colorSigma').value, 10) / 100).toFixed(2);
+    $('moveSpeedVal').textContent = (parseInt($('moveSpeed').value, 10) / 100).toFixed(2);
     $('speedVal').textContent = $('speed').value + ' steps/s';
     $('loopBadge').textContent = autoLoop ? '● auto-looping' : '';
   }
   function stopAutoLoop() { autoLoop = false; syncLabels(); }
 
-  ['initialPopulation', 'mutationRate', 'speed'].forEach(id =>
+  ['initialPopulation', 'colorSigma', 'moveSpeed', 'speed'].forEach(id =>
     $(id).addEventListener('input', () => { stopAutoLoop(); syncLabels(); }));
-  ['initialPopulation'].forEach(id =>
+  ['initialPopulation', 'moveSpeed'].forEach(id =>
     $(id).addEventListener('change', () => { stopAutoLoop(); reset(); }));
 
   function setRunning(next) {
