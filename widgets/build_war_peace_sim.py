@@ -1,5 +1,5 @@
 """Build a self-contained 2D simulation widget for the *location-based*
-War vs Peace game (proximity pairing).
+War vs Peace game.
 
 This is the spatial counterpart to the averaged-trajectory widget: instead of
 plotting curves, it animates the real evolving world so the reviewer can watch
@@ -12,9 +12,13 @@ who fights and who trades. Rendering conventions (as requested):
   * a red flash between two agents marks a fight this step; a green link marks a
     peaceful positive-sum trade.
 
-The whole simulation runs client-side (no server). It auto-loops as a resting
-demo; Play/Pause, New run, and the environment selector give manual control,
-and clicking an agent inspects its genes/resources. build_cmd is a no-op copy
+The simulation is fully configurable from a modal: proximity strength (how
+strongly pairing is location-based vs. well-mixed), peaceful RoI, war-outcome
+determinism, agent speed, loot fraction, and starting population. Presets seed
+the classic peaceful / arms-race / collapse environments. Editing any control
+and pressing Play stops the resting auto-loop and hands over manual control.
+
+The whole simulation runs client-side (no server). build_cmd is a no-op copy
 into assets/ so the app can serve it.
 """
 import os
@@ -26,7 +30,7 @@ OUT = os.path.join(ROOT, "assets", "war_peace_sim.html")
 HTML = r"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>War vs Peace — 2D simulation (proximity pairing)</title>
+<title>War vs Peace — configurable 2D simulation</title>
 <style>
   body { font-family:-apple-system,Segoe UI,Roboto,sans-serif; margin:0; padding:12px; color:#1a1a1a; background:#fff; }
   .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
@@ -39,16 +43,29 @@ HTML = r"""<!doctype html>
   .legend { font-size:12px; color:#555; margin-top:8px; line-height:1.5; }
   #inspect { background:#f6f8fb; border:1px solid #e2e6ee; border-radius:8px; padding:8px 10px; margin-top:8px; min-height:96px; }
   b { color:#111; }
+  /* modal */
+  #ov { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:10; }
+  #modal { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#fff;
+           border-radius:10px; padding:18px 20px; width:min(420px,92vw); z-index:11;
+           box-shadow:0 12px 40px rgba(0,0,0,0.3); max-height:88vh; overflow:auto; }
+  #modal h3 { margin:0 0 10px; }
+  .row { margin:12px 0; }
+  .row label { display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px; }
+  .row input[type=range] { width:100%; }
+  .row .hint { font-size:11px; color:#777; margin-top:2px; }
+  .modalbtns { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
 </style></head>
 <body>
 <div class="controls">
   <button id="playBtn" class="active" onclick="toggle()">Pause</button>
   <button onclick="reset(true)">New run</button>
-  <label>Environment
-    <select id="env" onchange="reset(true)">
+  <button onclick="openCfg()">Configure…</button>
+  <label>Preset
+    <select id="env" onchange="applyPreset()">
       <option value="peaceful">peaceful (det 0.25, RoI 2.0)</option>
       <option value="arms">arms race (det 1.0, RoI 1.5)</option>
       <option value="collapse">collapse (det 1.0, RoI 0.75)</option>
+      <option value="custom">custom…</option>
     </select>
   </label>
   <span id="stepLbl" class="stat"></span>
@@ -68,12 +85,52 @@ HTML = r"""<!doctype html>
     </div>
   </div>
 </div>
+
+<div id="ov" onclick="if(event.target===this)closeCfg()"><div id="modal">
+  <h3>Configure the world</h3>
+  <div class="row">
+    <label>Proximity strength <span id="v_prox"></span></label>
+    <input id="prox" type="range" min="0" max="1" step="0.05">
+    <div class="hint">1 = you only meet nearest neighbours (kin); 0 = well-mixed random pairing.</div>
+  </div>
+  <div class="row">
+    <label>Peaceful RoI <span id="v_roi"></span></label>
+    <input id="roi" type="range" min="0.25" max="3" step="0.05">
+    <div class="hint">Return on peaceful capital each step. Below ~1 the world can't cover upkeep.</div>
+  </div>
+  <div class="row">
+    <label>War determinism <span id="v_det"></span></label>
+    <input id="det" type="range" min="0" max="1" step="0.05">
+    <div class="hint">How reliably the better-armed agent wins a fight (1 = always).</div>
+  </div>
+  <div class="row">
+    <label>Agent speed <span id="v_speed"></span></label>
+    <input id="speed" type="range" min="0" max="0.12" step="0.005">
+    <div class="hint">Movement per step. Fast agents outrun kin clusters → proximity decays to random.</div>
+  </div>
+  <div class="row">
+    <label>Loot fraction <span id="v_loot"></span></label>
+    <input id="loot" type="range" min="0" max="1" step="0.05">
+    <div class="hint">Share of the loser's resources the winner seizes.</div>
+  </div>
+  <div class="row">
+    <label>Starting population <span id="v_pop"></span></label>
+    <input id="pop" type="range" min="10" max="80" step="2">
+  </div>
+  <div class="modalbtns">
+    <button onclick="closeCfg()">Cancel</button>
+    <button class="active" onclick="applyCfg()">Apply &amp; run</button>
+  </div>
+</div></div>
+
 <script>
 const $=id=>document.getElementById(id);
 const cv=$('stage'), ctx=cv.getContext('2d'), W=cv.width, H=cv.height;
-const ENVS={peaceful:{det:0.25,roi:2.0},arms:{det:1.0,roi:1.5},collapse:{det:1.0,roi:0.75}};
-const CAP=2, LOOT=0.5, EVOLVE=4, SPEED=0.03, CAP_POP=260;
-let agents=[], games=[], links=[], step=0, running=true, selected=null, timer=null;
+const PRESETS={peaceful:{det:0.25,roi:2.0},arms:{det:1.0,roi:1.5},collapse:{det:1.0,roi:0.75}};
+const CAP=2, EVOLVE=4, CAP_POP=300;
+// live, configurable parameters
+let P={prox:1.0, roi:2.0, det:0.25, speed:0.03, loot:0.5, pop:30};
+let agents=[], games=[], links=[], step=0, running=true, selected=null, timer=null, userDriven=false;
 
 function gauss(m,s){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return m+s*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
 function wrap(x){x%=1;return x<0?x+1:x;}
@@ -82,7 +139,7 @@ function torus(a,g){let dx=Math.abs(a.x-g.x),dy=Math.abs(a.y-g.y);dx=Math.min(dx
 
 function mkAgent(){
   const hue=Math.floor(Math.random()*360);
-  return {x:Math.random(),y:Math.random(),speed:SPEED,resources:EVOLVE,
+  return {x:Math.random(),y:Math.random(),speed:P.speed,resources:EVOLVE,
           weapon:Math.random(),aggr:Math.random(),hue,id:Math.random().toString(36).slice(2,7)};
 }
 function child(a){
@@ -92,20 +149,30 @@ function child(a){
           hue:(a.hue+gauss(0,6)+360)%360,id:Math.random().toString(36).slice(2,7)};
 }
 function reset(manual){
-  const n=30;
+  const n=P.pop|0;
   agents=Array.from({length:n},mkAgent);
-  games=Array.from({length:n/2|0},()=>({x:Math.random(),y:Math.random()}));
+  games=Array.from({length:Math.max(1,n/2|0)},()=>({x:Math.random(),y:Math.random()}));
   step=0; selected=null; links=[];
   if(manual){running=true;$('playBtn').textContent='Pause';$('playBtn').classList.add('active');}
   render(); stats();
 }
-// proximity pairing: the CAP agents nearest each game
+// Proximity pairing with a tunable strength. strength=1 => nearest agents;
+// strength=0 => uniform random pairing. Interpolated via a softmax over
+// -distance with a temperature that grows as strength -> 0.
 function selectForGame(g){
   if(agents.length<=CAP) return agents.slice();
-  return agents.slice().sort((p,q)=>torus(p,g)-torus(q,g)).slice(0,CAP);
+  const tau=0.35*(1-P.prox)+0.0015;             // small tau => sharply nearest
+  const scored=agents.map(a=>({a,w:Math.exp(-torus(a,g)/tau)}));
+  const picked=[];
+  for(let k=0;k<CAP && scored.length;k++){
+    let tot=scored.reduce((s,o)=>s+o.w,0), r=Math.random()*tot, i=0;
+    while(r>scored[i].w && i<scored.length-1){r-=scored[i].w;i++;}
+    picked.push(scored[i].a); scored.splice(i,1);
+  }
+  return picked;
 }
 function stepWorld(){
-  const {det,roi}=ENVS[$('env').value];
+  const det=P.det, roi=P.roi, loot=P.loot;
   links=[];
   for(const g of games){
     const pl=selectForGame(g);
@@ -116,15 +183,14 @@ function stepWorld(){
       let winner,loser;
       if(Math.random()<det){[winner,loser]=a.weapon>=b.weapon?[a,b]:[b,a];}
       else {[winner,loser]=Math.random()<0.5?[a,b]:[b,a];}
-      const loot=LOOT*Math.max(0,loser.resources);
-      winner.resources+=loot; loser.resources-=loot;
+      const take=loot*Math.max(0,loser.resources);
+      winner.resources+=take; loser.resources-=take;
       links.push({a,b,type:'fight'});
     } else {
       a.resources+=roi*(1-a.weapon); b.resources+=roi*(1-b.weapon);
       links.push({a,b,type:'peace'});
     }
   }
-  // evolve: upkeep, move, die, reproduce
   const next=[];
   for(const a of agents){
     a.resources-=1;
@@ -138,7 +204,7 @@ function stepWorld(){
   step++;
   render(); stats();
 }
-function drawStar(x,y,r,spikes,rot,fill,stroke){
+function drawStar(x,y,r,spikes,rot,fill){
   ctx.beginPath();
   const inner=r*0.45;
   for(let i=0;i<spikes*2;i++){
@@ -148,11 +214,9 @@ function drawStar(x,y,r,spikes,rot,fill,stroke){
     i?ctx.lineTo(px,py):ctx.moveTo(px,py);
   }
   ctx.closePath(); ctx.fillStyle=fill; ctx.fill();
-  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke();}
 }
 function render(){
   ctx.fillStyle='#0b0f19'; ctx.fillRect(0,0,W,H);
-  // interaction links
   for(const l of links){
     ctx.beginPath();
     ctx.moveTo(l.a.x*W,l.a.y*H); ctx.lineTo(l.b.x*W,l.b.y*H);
@@ -161,16 +225,12 @@ function render(){
   }
   for(const a of agents){
     const x=a.x*W, y=a.y*H;
-    const light=25+55*Math.min(1,a.resources/6);      // brightness ~ welfare
-    const spikes=Math.max(0,Math.round(a.weapon*9));    // spikiness ~ weapons
+    const light=25+55*Math.min(1,a.resources/6);
+    const spikes=Math.max(0,Math.round(a.weapon*9));
     const r=6+a.weapon*7;
     const fill=`hsl(${a.hue},70%,${light}%)`;
-    if(spikes<3){ // round blob when disarmed
-      ctx.beginPath(); ctx.arc(x,y,7,0,2*Math.PI);
-      ctx.fillStyle=fill; ctx.fill();
-    } else {
-      drawStar(x,y,r,spikes,step*0.05,fill,null);
-    }
+    if(spikes<3){ ctx.beginPath(); ctx.arc(x,y,7,0,2*Math.PI); ctx.fillStyle=fill; ctx.fill(); }
+    else { drawStar(x,y,r,spikes,step*0.05,fill); }
     if(a===selected){ctx.beginPath();ctx.arc(x,y,r+5,0,2*Math.PI);ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke();}
   }
 }
@@ -178,7 +238,7 @@ function stats(){
   const n=agents.length;
   const mean=k=>n?agents.reduce((s,a)=>s+a[k],0)/n:0;
   const welfare=agents.reduce((s,a)=>s+a.resources,0);
-  $('stepLbl').textContent=`step ${step}`;
+  $('stepLbl').textContent=`step ${step} · prox ${P.prox.toFixed(2)} · RoI ${P.roi.toFixed(2)} · det ${P.det.toFixed(2)}`;
   $('stats').innerHTML=
     `<div class="stat"><b>Population:</b> ${n}</div>`+
     `<div class="stat"><b>Total welfare:</b> ${welfare.toFixed(0)}</div>`+
@@ -188,7 +248,6 @@ function stats(){
 }
 function inspect(){
   const a=selected; if(!a){$('inspect').textContent='Click an agent to inspect it.';return;}
-  // how many nearby agents are similar in weaponry
   const near=agents.filter(o=>o!==a && torus(o,a)<0.02).length;
   $('inspect').innerHTML=
     `<b>Agent ${a.id}</b><br>`+
@@ -207,13 +266,44 @@ cv.addEventListener('click',e=>{
   render(); inspect();
 });
 function toggle(){running=!running;$('playBtn').textContent=running?'Pause':'Play';$('playBtn').classList.toggle('active',running);}
-function loop(){
-  if(running){
-    if(agents.length===0) reset(false);      // auto-restart when a world dies (demo)
-    else { stepWorld(); if(step>=160) reset(false); }
-  }
+
+// ---- presets & configuration modal ----
+function applyPreset(){
+  const key=$('env').value;
+  if(PRESETS[key]){P.det=PRESETS[key].det;P.roi=PRESETS[key].roi;P.prox=1.0;P.speed=0.03;}
+  userDriven=false;                       // preset resumes the resting demo loop
+  reset(true);
 }
-reset(false);
+function openCfg(){
+  $('prox').value=P.prox; $('roi').value=P.roi; $('det').value=P.det;
+  $('speed').value=P.speed; $('loot').value=P.loot; $('pop').value=P.pop;
+  syncLabels(); $('ov').style.display='block';
+}
+function closeCfg(){$('ov').style.display='none';}
+function syncLabels(){
+  $('v_prox').textContent=(+$('prox').value).toFixed(2);
+  $('v_roi').textContent=(+$('roi').value).toFixed(2);
+  $('v_det').textContent=(+$('det').value).toFixed(2);
+  $('v_speed').textContent=(+$('speed').value).toFixed(3);
+  $('v_loot').textContent=(+$('loot').value).toFixed(2);
+  $('v_pop').textContent=(+$('pop').value|0);
+}
+['prox','roi','det','speed','loot','pop'].forEach(id=>$(id).addEventListener('input',syncLabels));
+function applyCfg(){
+  P.prox=+$('prox').value; P.roi=+$('roi').value; P.det=+$('det').value;
+  P.speed=+$('speed').value; P.loot=+$('loot').value; P.pop=+$('pop').value|0;
+  $('env').value='custom';
+  userDriven=true;                        // user config stops auto-looping
+  closeCfg(); reset(true);
+}
+
+function loop(){
+  if(!running) return;
+  if(agents.length===0){ if(!userDriven) reset(false); return; }
+  stepWorld();
+  if(step>=160 && !userDriven) reset(false);   // resting demo loops; user runs don't
+}
+applyPreset();
 timer=setInterval(loop,180);
 </script>
 </body></html>
